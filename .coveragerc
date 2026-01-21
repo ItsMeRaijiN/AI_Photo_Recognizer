@@ -1,0 +1,5 @@
+[run]
+omit =
+    backend/ml/*
+    backend/custom_metrics/*
+    backend/tests/*
