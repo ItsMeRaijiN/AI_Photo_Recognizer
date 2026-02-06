@@ -40,7 +40,7 @@ router = APIRouter(prefix="/analysis", tags=["Analysis"])
 
 # Constants
 MAX_BATCH_FILES = 100
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".gif", ".heic"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".heic"}
 
 
 def compute_file_hash(data: bytes) -> str:

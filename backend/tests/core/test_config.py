@@ -1,7 +1,6 @@
-import os
 from unittest.mock import patch, MagicMock
 
-from backend.core.config import Settings, _detect_device, _find_best_model, _is_placeholder
+from backend.core.config import Settings, _detect_device
 
 
 class TestDeviceDetection:

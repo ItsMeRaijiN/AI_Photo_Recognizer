@@ -55,7 +55,7 @@ class FolderAnalysisRequest(BaseModel):
     max_images: int = Field(
         default=100,
         ge=1,
-        le=1000,
+        le=100,
         description="Maximum images to process",
     )
 

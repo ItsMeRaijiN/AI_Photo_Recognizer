@@ -3,7 +3,7 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from backend.schemas.analysis import AnalysisResponse, FolderAnalysisRequest
+from backend.schemas.analysis import AnalysisResponse
 
 
 class TestAnalysisResponse:

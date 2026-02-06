@@ -24,7 +24,7 @@ class Analysis(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    file_hash = Column(String(64), index=True, nullable=False)
+    file_hash = Column(String(32), index=True, nullable=False)
     filename = Column(String(255), nullable=False)
     file_path = Column(Text, nullable=False)
 

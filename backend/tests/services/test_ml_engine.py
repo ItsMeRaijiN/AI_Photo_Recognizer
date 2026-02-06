@@ -8,8 +8,6 @@ import pytest
 import torch
 from PIL import Image
 
-from backend.services.ml_engine import PredictionResult
-
 
 @pytest.fixture
 def engine():

@@ -4,8 +4,8 @@ import { motion } from 'framer-motion';
 import { AnalysisResult, getModelDisplayName, isMetricSuspicious, MetricResult } from '@/lib/types';
 import { api, endpoints } from '@/lib/api';
 import {
-  AlertTriangle, CheckCircle, Eye, Activity, Clock, Zap, Loader2,
-  Ban, Download, ChevronDown, ChevronUp, AlertCircle, Cpu, Check
+  AlertTriangle, CheckCircle, Eye, Activity, Clock, Loader2,
+  Ban, Download, ChevronDown, ChevronUp, AlertCircle, Cpu
 } from 'lucide-react';
 import AuthImage from './AuthImage';
 

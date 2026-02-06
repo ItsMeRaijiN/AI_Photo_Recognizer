@@ -53,7 +53,7 @@ export default function UploadArea({
 
     const imageFiles = files.filter(f =>
       f.type.startsWith('image/') ||
-      /\.(jpg|jpeg|png|webp|gif|bmp|tiff|heic)$/i.test(f.name)
+      /\.(jpg|jpeg|png|webp|bmp|tiff|heic)$/i.test(f.name)
     );
 
     if (imageFiles.length === 0) {

@@ -9,8 +9,7 @@ import AdminPanel from './AdminPanel';
 import AuthImage from './AuthImage';
 import {
   LogOut, History, RefreshCcw, User, Ghost, Sun, Moon,
-  ShieldAlert, FileDown, Trash2, Cpu, Layers, CheckCircle,
-  AlertCircle, Clock
+  ShieldAlert, FileDown, Trash2, Cpu, Layers, AlertCircle, Clock
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -196,7 +195,7 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
       });
 
       if (isGuest) {
-        setLocalHistory(prev => [...resultsWithPreviews, ...prev].slice(0, 50));
+        setLocalHistory(prev => [...resultsWithPreviews, ...prev].slice(0, 20));
       } else {
         await fetchHistory();
       }

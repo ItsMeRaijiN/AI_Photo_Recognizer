@@ -93,7 +93,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:8000",
     ]
 
-    ALLOWED_EXTENSIONS: set[str] = {".png", ".jpg", ".jpeg", ".webp", ".heic", ".bmp", ".tiff", ".gif"}
+    ALLOWED_EXTENSIONS: set[str] = {".png", ".jpg", ".jpeg", ".webp", ".heic", ".bmp", ".tiff"}
 
     BATCH_MAX_WORKERS: int = 4
     BATCH_INFERENCE_SIZE: int = 16
