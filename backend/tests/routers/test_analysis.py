@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -24,7 +25,7 @@ class TestPredictSingle:
         resp = client.post("/analysis/predict", headers=auth_headers, files=files)
         assert resp.status_code == 400
 
-    def test_predict_cache_hit(self, client: TestClient, auth_headers: dict, test_db, test_user):
+    def test_predict_cache_hit_same_model(self, client: TestClient, auth_headers: dict, test_db, test_user):
         img = Image.new("RGB", (16, 16), color=(10, 20, 30))
         buf = io.BytesIO()
         img.save(buf, format="PNG")
@@ -44,6 +45,7 @@ class TestPredictSingle:
             inference_time_ms=12.0,
             model_type="torch",
             backbone_name="convnext",
+            model_version="test-fingerprint",
             threshold_used=0.5,
             created_at=datetime.now(timezone.utc),
             owner_id=test_user.id,
@@ -53,7 +55,49 @@ class TestPredictSingle:
 
         files = {"file": ("cached.png", payload, "image/png")}
         resp = client.post("/analysis/predict", headers=auth_headers, files=files)
-        assert resp.status_code in (200, 201)
+        assert resp.status_code == 200
+        assert resp.json()["score"] == 0.99
+
+    def test_predict_cache_miss_for_different_model(
+        self, client: TestClient, auth_headers: dict, test_db, test_user
+    ):
+        img = Image.new("RGB", (16, 16), color=(40, 50, 60))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        payload = buf.getvalue()
+
+        from backend.routers.analysis import compute_file_hash
+
+        analysis = Analysis(
+            filename="stale.png",
+            file_hash=compute_file_hash(payload),
+            file_path="/tmp/stale.png",
+            is_ai=True,
+            score=0.99,
+            confidence=0.99,
+            inference_time_ms=12.0,
+            model_type="torch",
+            backbone_name="convnext",
+            model_version="old-model-weights",
+            threshold_used=0.5,
+            created_at=datetime.now(timezone.utc),
+            owner_id=test_user.id,
+        )
+        test_db.add(analysis)
+        test_db.commit()
+
+        files = {"file": ("stale.png", payload, "image/png")}
+        resp = client.post("/analysis/predict", headers=auth_headers, files=files)
+        assert resp.status_code == 200
+        assert resp.json()["score"] == 0.95
+
+    def test_predict_rejects_oversized_upload(self, client: TestClient):
+        from backend.core.config import settings
+
+        oversized = b"x" * (settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024 + 1)
+        files = {"file": ("big.png", oversized, "image/png")}
+        resp = client.post("/analysis/predict", files=files)
+        assert resp.status_code == 413
 
 
 class TestPredictBatch:
@@ -72,16 +116,6 @@ class TestPredictBatch:
         body = resp.json()
         assert "results" in body
         assert "errors" in body
-
-
-class TestFolderAnalysis:
-    def test_path_not_found(self, client: TestClient, auth_headers: dict):
-        resp = client.post(
-            "/analysis/folder",
-            headers=auth_headers,
-            json={"path": "Z:/nonexistent", "recursive": True},
-        )
-        assert resp.status_code == 404
 
 
 class TestHistory:
@@ -143,6 +177,40 @@ class TestAnalysisCRUD:
         resp = client.delete(f"/analysis/{a.id}", headers=auth_headers)
         assert resp.status_code == 200
         assert test_db.query(Analysis).filter(Analysis.id == a.id).first() is None
+        assert img.exists()
+
+    def test_delete_analysis_removes_managed_upload(
+        self, client: TestClient, auth_headers: dict, test_db, test_user, tmp_path: Path
+    ):
+        from backend.core.config import settings
+
+        upload_dir = tmp_path / "uploads"
+        upload_dir.mkdir()
+        img = upload_dir / "managed.png"
+        img.write_bytes(b"x")
+
+        a = Analysis(
+            filename="managed.png",
+            file_hash="hm",
+            file_path=str(img),
+            is_ai=False,
+            score=0.2,
+            confidence=0.8,
+            inference_time_ms=2.0,
+            model_type="torch",
+            backbone_name="convnext",
+            owner_id=test_user.id,
+            created_at=datetime.now(timezone.utc),
+        )
+        test_db.add(a)
+        test_db.commit()
+        test_db.refresh(a)
+
+        with patch.object(settings, "UPLOAD_DIR", upload_dir):
+            resp = client.delete(f"/analysis/{a.id}", headers=auth_headers)
+
+        assert resp.status_code == 200
+        assert not img.exists()
 
 
 class TestAnalysisImage:
@@ -231,7 +299,7 @@ class TestHeatmap:
         assert resp.headers["content-type"].startswith("image/")
 
 
-    def test_save_heatmap(
+    def test_generated_heatmap_is_persisted(
         self, client: TestClient, auth_headers: dict, test_db, test_user, tmp_path: Path
     ):
         img_path = tmp_path / "x.png"
@@ -256,22 +324,13 @@ class TestHeatmap:
         test_db.commit()
         test_db.refresh(a)
 
-        resp = client.post(f"/analysis/{a.id}/heatmap/save", headers=auth_headers)
-        assert resp.status_code in (200, 201)
+        from backend.core.config import settings
 
+        with patch.object(settings, "HEATMAPS_DIR", tmp_path):
+            resp = client.get(f"/analysis/{a.id}/heatmap", headers=auth_headers)
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("image/")
         test_db.refresh(a)
         assert a.heatmap_path is not None
-
-
-class TestBatchJobs:
-    def test_start_and_check_status(self, client: TestClient, auth_headers: dict, tmp_path: Path):
-        payload = {"path": str(tmp_path), "recursive": True}
-        resp = client.post("/analysis/batch/start", headers=auth_headers, json=payload)
-        assert resp.status_code in (200, 201)
-
-        job_id = resp.json().get("job_id")
-        assert job_id
-
-        status_resp = client.get(f"/analysis/batch/{job_id}", headers=auth_headers)
-        assert status_resp.status_code == 200
-        assert "status" in status_resp.json()
+        assert Path(a.heatmap_path).exists()

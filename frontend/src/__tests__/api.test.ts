@@ -18,7 +18,7 @@ jest.mock('axios', () => {
   };
 });
 
-import { endpoints, uploadBatch, analyzeFolder } from '@/lib/api';
+import { endpoints, uploadBatch } from '@/lib/api';
 
 const axios = jest.requireMock('axios') as { __mocks__: { post: jest.Mock } };
 const mockPost = axios.__mocks__.post;
@@ -44,9 +44,7 @@ describe('API module', () => {
     it('should have correct analysis endpoints', () => {
       expect(endpoints.predict).toBe('/analysis/predict');
       expect(endpoints.predictBatch).toBe('/analysis/predict/batch');
-      expect(endpoints.analyzeFolder).toBe('/analysis/folder');
       expect(endpoints.history).toBe('/analysis/history');
-      expect(endpoints.batchStart).toBe('/analysis/batch/start');
       expect(endpoints.modelInfo).toBe('/analysis/model/info');
       expect(endpoints.availableMetrics).toBe('/analysis/metrics/available');
     });
@@ -73,12 +71,6 @@ describe('API module', () => {
       expect(endpoints.heatmap(1)).toBe('/analysis/1/heatmap');
       expect(endpoints.heatmap(1, false)).toBe('/analysis/1/heatmap');
       expect(endpoints.heatmap(1, true)).toBe('/analysis/1/heatmap?download=true');
-      expect(endpoints.saveHeatmap(5)).toBe('/analysis/5/heatmap/save');
-    });
-
-    it('should generate correct batch paths with jobId', () => {
-      expect(endpoints.batchStatus('abc-123')).toBe('/analysis/batch/abc-123');
-      expect(endpoints.batchStream('job-uuid')).toBe('/analysis/batch/job-uuid/stream');
     });
 
     it('should generate correct admin user paths', () => {
@@ -143,74 +135,6 @@ describe('API module', () => {
       const files = [new File(['test'], 'test.jpg', { type: 'image/jpeg' })];
 
       await expect(uploadBatch(files)).rejects.toThrow('Network error');
-    });
-  });
-
-  describe('analyzeFolder function', () => {
-    it('should send folder path to analyzeFolder endpoint', async () => {
-      const mockResponse = {
-        data: {
-          total: 5,
-          processed: 5,
-          results: [],
-        }
-      };
-      mockPost.mockResolvedValueOnce(mockResponse);
-
-      const result = await analyzeFolder('/path/to/images');
-
-      expect(mockPost).toHaveBeenCalledWith(
-        endpoints.analyzeFolder,
-        {
-          path: '/path/to/images',
-          recursive: false,
-          max_images: 100,
-        }
-      );
-      expect(result).toEqual(mockResponse.data);
-    });
-
-    it('should pass recursive option when provided', async () => {
-      mockPost.mockResolvedValueOnce({ data: {} });
-
-      await analyzeFolder('/path', { recursive: true });
-
-      expect(mockPost).toHaveBeenCalledWith(
-        endpoints.analyzeFolder,
-        expect.objectContaining({ recursive: true })
-      );
-    });
-
-    it('should pass maxImages option when provided', async () => {
-      mockPost.mockResolvedValueOnce({ data: {} });
-
-      await analyzeFolder('/path', { maxImages: 50 });
-
-      expect(mockPost).toHaveBeenCalledWith(
-        endpoints.analyzeFolder,
-        expect.objectContaining({ max_images: 50 })
-      );
-    });
-
-    it('should use default values when options not provided', async () => {
-      mockPost.mockResolvedValueOnce({ data: {} });
-
-      await analyzeFolder('/path');
-
-      expect(mockPost).toHaveBeenCalledWith(
-        endpoints.analyzeFolder,
-        {
-          path: '/path',
-          recursive: false,
-          max_images: 100,
-        }
-      );
-    });
-
-    it('should propagate API errors', async () => {
-      mockPost.mockRejectedValueOnce(new Error('Folder not found'));
-
-      await expect(analyzeFolder('/invalid/path')).rejects.toThrow('Folder not found');
     });
   });
 });

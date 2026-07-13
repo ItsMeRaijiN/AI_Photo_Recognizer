@@ -2,14 +2,12 @@
 import { useCallback, useState, useEffect, useRef } from 'react';
 import { useDropzone } from 'react-dropzone';
 import {
-  UploadCloud, Loader2, Link as LinkIcon, ImagePlus,
-  FolderOpen, Layers
+  UploadCloud, Loader2, Link as LinkIcon, ImagePlus
 } from 'lucide-react';
 
 interface UploadAreaProps {
   onFileSelect: (files: File[]) => void;
   onBatchUpload?: (files: File[]) => Promise<void>;
-  onFolderAnalyze?: (path: string, recursive: boolean) => Promise<void>;
   isLoading: boolean;
   progress: number;
   progressText?: string;
@@ -18,16 +16,12 @@ interface UploadAreaProps {
 export default function UploadArea({
   onFileSelect,
   onBatchUpload,
-  onFolderAnalyze,
   isLoading,
   progress,
   progressText
 }: UploadAreaProps) {
   const [url, setUrl] = useState('');
   const [isUrlLoading, setIsUrlLoading] = useState(false);
-  const [folderPath, setFolderPath] = useState('');
-  const [recursive, setRecursive] = useState(false);
-  const [showFolderInput, setShowFolderInput] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
@@ -35,6 +29,14 @@ export default function UploadArea({
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (isLoading) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
 
       if (e.shiftKey && (e.key === 'T' || e.key === 't')) {
         e.preventDefault();
@@ -63,8 +65,6 @@ export default function UploadArea({
 
     if (onBatchUpload && imageFiles.length > 1) {
       onBatchUpload(imageFiles);
-    } else if (imageFiles.length === 1) {
-      onFileSelect(imageFiles);
     } else {
       onFileSelect(imageFiles);
     }
@@ -147,23 +147,16 @@ export default function UploadArea({
       const timestamp = Date.now();
       const filename = `url_image_${timestamp}${ext}`;
 
-      console.log('URL image:', { mime: blob.type, ext, filename, size: blob.size });
-
       const file = new File([blob], filename, { type: blob.type || 'image/jpeg' });
       onFileSelect([file]);
       setUrl('');
-    } catch (error: any) {
+    } catch (error) {
       console.error('URL fetch error:', error);
-      alert(`Błąd pobierania z URL: ${error.message || 'CORS lub niedostępny'}`);
+      const message = error instanceof Error && error.message ? error.message : 'CORS lub niedostępny';
+      alert(`Błąd pobierania z URL: ${message}`);
     } finally {
       setIsUrlLoading(false);
     }
-  };
-
-  const handleFolderPathSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!folderPath.trim() || !onFolderAnalyze) return;
-    await onFolderAnalyze(folderPath.trim(), recursive);
   };
 
   return (
@@ -180,7 +173,6 @@ export default function UploadArea({
       <input
         ref={folderInputRef}
         type="file"
-        // @ts-ignore - webkitdirectory is not in types but works
         webkitdirectory=""
         multiple
         onChange={handleFolderInputChange}
@@ -249,62 +241,6 @@ export default function UploadArea({
           </div>
         )}
       </div>
-
-      {onFolderAnalyze && (
-        <div className="flex gap-2">
-          <button
-            onClick={() => setShowFolderInput(!showFolderInput)}
-            disabled={isLoading}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition border
-              ${showFolderInput 
-                ? 'bg-indigo-500 text-white border-indigo-500' 
-                : 'bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-600 dark:text-zinc-400 border-zinc-200 dark:border-zinc-700'}
-              disabled:opacity-50 disabled:cursor-not-allowed`}
-          >
-            <FolderOpen size={14} />
-            Analiza ścieżki
-          </button>
-        </div>
-      )}
-
-      {showFolderInput && onFolderAnalyze && (
-        <form onSubmit={handleFolderPathSubmit} className="space-y-3 p-4 bg-zinc-100 dark:bg-zinc-900/50 rounded-xl border border-zinc-200 dark:border-zinc-800">
-          <p className="text-xs text-zinc-500 mb-2">
-            Podaj ścieżkę do <strong>folderu</strong> lub <strong>pliku</strong>
-          </p>
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-              <FolderOpen className="absolute left-3 top-2.5 text-zinc-500" size={16} />
-              <input
-                type="text"
-                placeholder="C:\\Users\\User\\Pictures lub C:\\Users\\User\\image.jpg"
-                className="w-full bg-white dark:bg-black/50 border border-zinc-300 dark:border-zinc-700 rounded-lg py-2 pl-10 pr-4 text-sm text-zinc-900 dark:text-white focus:border-indigo-500 outline-none transition font-mono"
-                value={folderPath}
-                onChange={e => setFolderPath(e.target.value)}
-                disabled={isLoading}
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={!folderPath.trim() || isLoading}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50 transition flex items-center gap-2"
-            >
-              <Layers size={16} />
-              Analizuj
-            </button>
-          </div>
-          <label className="flex items-center gap-2 text-xs text-zinc-500 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={recursive}
-              onChange={e => setRecursive(e.target.checked)}
-              className="rounded border-zinc-300 text-indigo-500 focus:ring-indigo-500"
-              disabled={isLoading}
-            />
-            Skanuj podfoldery rekurencyjnie
-          </label>
-        </form>
-      )}
 
       <form onSubmit={handleUrlSubmit} className="flex gap-2">
         <div className="relative flex-1">

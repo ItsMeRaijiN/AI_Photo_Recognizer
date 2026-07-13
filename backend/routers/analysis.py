@@ -15,7 +15,7 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from PIL import Image
 from sqlalchemy.orm import Session
 
@@ -25,22 +25,13 @@ from backend.custom_metrics import MetricContext
 from backend.models.analysis import Analysis
 from backend.models.user import User
 from backend.routers.deps import get_current_user, get_current_user_or_none
-from backend.schemas.analysis import (
-    AnalysisResponse,
-    BatchRequest,
-    BatchUploadResponse,
-    FolderAnalysisRequest,
-    JobStatusResponse,
-)
-from backend.services.batch_manager import batch_processor
+from backend.schemas.analysis import AnalysisResponse, BatchUploadResponse
 from backend.services.metrics_loader import metrics_engine
 from backend.services.ml_engine import ml_engine
 
 router = APIRouter(prefix="/analysis", tags=["Analysis"])
 
-# Constants
 MAX_BATCH_FILES = 100
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".heic"}
 
 
 def compute_file_hash(data: bytes) -> str:
@@ -103,6 +94,7 @@ def save_analysis_to_db(
         inference_time_ms=result.inference_time_ms,
         model_type=result.model_type,
         backbone_name=result.backbone_name,
+        model_version=ml_engine.model_version,
         custom_metrics=metrics or None,
         owner_id=owner_id,
     )
@@ -118,17 +110,34 @@ def get_cached_analyses(
     cached = db.query(Analysis).filter(
         Analysis.file_hash.in_(hashes),
         Analysis.owner_id == owner_id,
-        Analysis.backbone_name == ml_engine.backbone_name,
+        Analysis.model_version == ml_engine.model_version,
     ).all()
     return {str(c.file_hash): c for c in cached}
 
 
-def try_delete_file(path: str | None) -> None:
-    if path:
-        try:
-            Path(path).unlink(missing_ok=True)
-        except OSError:
-            pass
+def validate_upload_size(file_bytes: bytes, filename: str) -> None:
+    max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    if len(file_bytes) > max_bytes:
+        raise HTTPException(
+            413,
+            f"File '{filename}' exceeds the {settings.MAX_UPLOAD_SIZE_MB} MB limit",
+        )
+
+
+def try_delete_managed_file(path: str | None) -> None:
+    if not path:
+        return
+
+    target = Path(path).resolve()
+    managed_dirs = [settings.UPLOAD_DIR, settings.HEATMAPS_DIR]
+
+    for managed in managed_dirs:
+        if managed and target.is_relative_to(managed.resolve()):
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
 
 
 @router.post("/predict", response_model=AnalysisResponse)
@@ -144,13 +153,16 @@ async def predict_image(
         raise HTTPException(400, f"Unsupported format: {safe_filename}")
 
     file_bytes = await file.read()
+    validate_upload_size(file_bytes, safe_filename)
     file_hash = compute_file_hash(file_bytes)
 
     if current_user:
+        # Cache key includes the model fingerprint so swapping in retrained
+        # weights (same backbone) never serves results from the old model.
         cached = db.query(Analysis).filter(
             Analysis.file_hash == file_hash,
             Analysis.owner_id == current_user.id,
-            Analysis.backbone_name == ml_engine.backbone_name,
+            Analysis.model_version == ml_engine.model_version,
         ).first()
         if cached:
             return AnalysisResponse.model_validate(cached)
@@ -206,9 +218,12 @@ async def predict_batch_upload(
 
         try:
             file_bytes = await file.read()
+            validate_upload_size(file_bytes, filename)
             file_hash = compute_file_hash(file_bytes)
             image = Image.open(io.BytesIO(file_bytes)).convert("RGB")
             images_data.append((filename, file_hash, image, file_bytes))
+        except HTTPException as e:
+            errors.append(f"{filename}: {e.detail}")
         except Exception as e:
             errors.append(f"{filename}: {e}")
 
@@ -271,98 +286,6 @@ async def predict_batch_upload(
     )
 
 
-@router.post("/folder", response_model=BatchUploadResponse)
-async def analyze_folder(
-    req: FolderAnalysisRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> BatchUploadResponse:
-    target_path = Path(req.path)
-
-    if not target_path.exists():
-        raise HTTPException(404, f"Path not found: {req.path}")
-
-    start_time = time.perf_counter()
-    context = create_metric_context()
-
-    files: list[Path] = []
-
-    if target_path.is_file():
-        if target_path.suffix.lower() in IMAGE_EXTENSIONS:
-            files = [target_path]
-        else:
-            raise HTTPException(400, f"Unsupported format: {target_path.suffix}")
-    else:
-        pattern = "**/*" if req.recursive else "*"
-        for p in target_path.glob(pattern):
-            if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS:
-                files.append(p)
-                if len(files) >= req.max_images:
-                    break
-
-    if not files:
-        raise HTTPException(400, f"No images found in: {req.path}")
-
-    results: list[AnalysisResponse] = []
-    errors: list[str] = []
-
-    images_data: list[tuple[str, str, Image.Image, str]] = []
-    for filepath in files:
-        try:
-            file_bytes = filepath.read_bytes()
-            file_hash = compute_file_hash(file_bytes)
-            image = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-            images_data.append((filepath.name, file_hash, image, str(filepath)))
-        except Exception as e:
-            errors.append(f"{filepath.name}: {e}")
-
-    if not images_data:
-        raise HTTPException(400, f"No valid images. Errors: {errors}")
-
-    hashes = [d[1] for d in images_data]
-    cached_map = get_cached_analyses(db, hashes, current_user.id)
-
-    to_process: list[tuple[str, str, Image.Image, str]] = []
-    for item in images_data:
-        if item[1] in cached_map:
-            results.append(AnalysisResponse.model_validate(cached_map[item[1]]))
-        else:
-            to_process.append(item)
-
-    if to_process:
-        images_list = [item[2] for item in to_process]
-        predictions = ml_engine.predict_batch(images_list, return_errors=True)
-
-        for (filename, file_hash, image, filepath), prediction in zip(
-            to_process, predictions, strict=True
-        ):
-            if prediction is None or prediction.error:
-                errors.append(f"{filename}: {prediction.error if prediction else 'Error'}")
-                continue
-
-            metrics = metrics_engine.compute_all(image, prediction.score, context, parallel=False)
-
-            analysis = save_analysis_to_db(
-                db, filename, file_hash, filepath,
-                prediction, metrics, current_user.id
-            )
-            db.flush()
-            results.append(AnalysisResponse.model_validate(analysis))
-
-        db.commit()
-
-    total_time = (time.perf_counter() - start_time) * 1000
-
-    return BatchUploadResponse(
-        total=len(files),
-        processed=len(results),
-        failed=len(errors),
-        results=results,
-        errors=errors[:20],
-        total_inference_time_ms=round(total_time, 2),
-    )
-
-
 @router.get("/history", response_model=list[AnalysisResponse])
 def get_history(
     skip: int = 0,
@@ -408,8 +331,8 @@ def delete_analysis(
     if not analysis:
         raise HTTPException(404, "Analysis not found")
 
-    try_delete_file(str(analysis.file_path) if analysis.file_path else None)
-    try_delete_file(str(analysis.heatmap_path) if analysis.heatmap_path else None)
+    try_delete_managed_file(str(analysis.file_path) if analysis.file_path else None)
+    try_delete_managed_file(str(analysis.heatmap_path) if analysis.heatmap_path else None)
 
     db.delete(analysis)
     db.commit()
@@ -473,9 +396,10 @@ def get_heatmap(
         if heatmap_image is None:
             raise HTTPException(400, "Heatmap not available for this model")
 
-        heatmap_filename = f"heatmap_{analysis_id}_{uuid.uuid4().hex[:8]}.jpg"
-        heatmap_path = settings.HEATMAPS_DIR / heatmap_filename
+        heatmap_path = settings.HEATMAPS_DIR / f"heatmap_{analysis_id}.jpg"
         heatmap_image.save(heatmap_path, "JPEG", quality=90)
+        analysis.heatmap_path = str(heatmap_path)
+        db.commit()
 
         return FileResponse(
             heatmap_path,
@@ -486,126 +410,6 @@ def get_heatmap(
         raise
     except Exception as e:
         raise HTTPException(500, f"Heatmap error: {e}")
-
-
-@router.post("/{analysis_id}/heatmap/save")
-def save_heatmap(
-    analysis_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-) -> dict[str, str]:
-    analysis = db.query(Analysis).filter(
-        Analysis.id == analysis_id,
-        Analysis.owner_id == current_user.id,
-    ).first()
-
-    if not analysis:
-        raise HTTPException(404, "Analysis not found")
-
-    if analysis.heatmap_path and Path(str(analysis.heatmap_path)).exists():
-        return {"status": "already_saved", "path": str(analysis.heatmap_path)}
-
-    file_path = Path(str(analysis.file_path))
-    if not file_path.exists():
-        raise HTTPException(404, "Original image not found")
-
-    try:
-        image = Image.open(file_path).convert("RGB")
-        heatmap_image = ml_engine.generate_heatmap(image)
-
-        if heatmap_image is None:
-            raise HTTPException(400, "Heatmap not available")
-
-        heatmap_filename = f"heatmap_{analysis_id}.jpg"
-        heatmap_path = settings.HEATMAPS_DIR / heatmap_filename
-        heatmap_image.save(heatmap_path, "JPEG", quality=90)
-
-        analysis.heatmap_path = str(heatmap_path)
-        db.commit()
-
-        return {"status": "saved", "path": str(heatmap_path)}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Error: {e}")
-
-
-@router.post("/batch/start", response_model=JobStatusResponse)
-async def start_batch_job(
-    req: BatchRequest,
-    current_user: User = Depends(get_current_user),
-) -> JobStatusResponse:
-    try:
-        job_id = await batch_processor.start_batch_job(
-            req.path, current_user.id, req.recursive
-        )
-        job_status = batch_processor.get_job_status(job_id)
-
-        return JobStatusResponse(
-            job_id=job_id,
-            status=job_status["status"],
-            total=job_status["total"],
-            processed=job_status["processed"],
-            progress_percent=job_status["progress_percent"],
-            current_file=job_status.get("current_file"),
-            errors=job_status.get("errors", []),
-            results=[],
-        )
-    except FileNotFoundError:
-        raise HTTPException(404, "Folder not found")
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-
-
-@router.get("/batch/{job_id}", response_model=JobStatusResponse)
-def get_batch_status(
-    job_id: str,
-    include_results: bool = True,
-    _current_user: User = Depends(get_current_user),  # Auth only
-) -> JobStatusResponse:
-    job_status = batch_processor.get_job_status(job_id)
-    if not job_status:
-        raise HTTPException(404, "Job not found")
-
-    return JobStatusResponse(
-        job_id=job_id,
-        status=job_status["status"],
-        total=job_status["total"],
-        processed=job_status["processed"],
-        progress_percent=job_status["progress_percent"],
-        current_file=job_status.get("current_file"),
-        errors=job_status.get("errors", [])[-10:],
-        results=job_status.get("results", []) if include_results else [],
-    )
-
-
-@router.get("/batch/{job_id}/stream")
-async def batch_progress_stream(
-    job_id: str,
-    _current_user: User = Depends(get_current_user),  # Auth only
-) -> StreamingResponse:
-    import asyncio
-    import json
-
-    async def event_generator():
-        while True:
-            job_status = batch_processor.get_job_status(job_id)
-            if not job_status:
-                yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
-                break
-
-            yield f"data: {json.dumps(job_status)}\n\n"
-
-            if job_status["status"] in ("completed", "failed"):
-                break
-
-            await asyncio.sleep(0.5)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
 
 
 @router.get("/model/info")

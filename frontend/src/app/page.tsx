@@ -1,17 +1,25 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useSyncExternalStore } from 'react';
 import AuthForm from '@/components/AuthForm';
 import Dashboard from '@/components/Dashboard';
 
+const emptySubscribe = () => () => {};
+
+function useHydrated(): boolean {
+  return useSyncExternalStore(emptySubscribe, () => true, () => false);
+}
+
 export default function Home() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const hydrated = useHydrated();
+  const [isLoggedIn, setIsLoggedIn] = useState(
+    () => typeof window !== 'undefined' && Boolean(localStorage.getItem('token'))
+  );
   const [isGuest, setIsGuest] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (token) setIsLoggedIn(true);
-    setIsLoading(false);
+    const handleUnauthorized = () => setIsLoggedIn(false);
+    window.addEventListener('auth:unauthorized', handleUnauthorized);
+    return () => window.removeEventListener('auth:unauthorized', handleUnauthorized);
   }, []);
 
   const handleLogin = () => setIsLoggedIn(true);
@@ -26,7 +34,7 @@ export default function Home() {
     setIsGuest(false);
   };
 
-  if (isLoading) return null;
+  if (!hydrated) return null;
 
   if (isLoggedIn || isGuest) {
     return <Dashboard onLogoutAction={handleLogout} isGuest={isGuest} />;

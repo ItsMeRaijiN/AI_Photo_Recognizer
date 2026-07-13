@@ -1,7 +1,8 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useTheme } from "next-themes";
 import { api, endpoints } from '@/lib/api';
+import { getErrorMessage } from '@/lib/errors';
 import { AnalysisResult, BatchUploadResponse } from '@/lib/types';
 import UploadArea from './UploadArea';
 import AnalysisResultCard from './AnalysisResult';
@@ -36,6 +37,25 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
 
   const displayHistory = isGuest ? localHistory : dbHistory;
 
+  const checkAdmin = useCallback(async () => {
+    try {
+      await api.get(endpoints.adminStats);
+      setIsAdmin(true);
+    } catch {
+      setIsAdmin(false);
+    }
+  }, []);
+
+  const fetchHistory = useCallback(async () => {
+    if (isGuest) return;
+    try {
+      const res = await api.get(endpoints.history);
+      setDbHistory(res.data);
+    } catch (e) {
+      console.error(e);
+    }
+  }, [isGuest]);
+
   useEffect(() => {
     setMounted(true);
     if (isGuest) {
@@ -53,33 +73,18 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
       fetchHistory();
       checkAdmin();
     }
-  }, [isGuest]);
+  }, [isGuest, fetchHistory, checkAdmin]);
 
   useEffect(() => {
     if (isGuest && mounted) {
-      const historyToSave = localHistory.map(({ previewUrl, ...rest }) => rest);
+      const historyToSave = localHistory.map(item => {
+        const copy = { ...item };
+        delete copy.previewUrl;
+        return copy;
+      });
       sessionStorage.setItem('guestHistory', JSON.stringify(historyToSave));
     }
   }, [localHistory, isGuest, mounted]);
-
-  const checkAdmin = async () => {
-    try {
-      await api.get(endpoints.adminStats);
-      setIsAdmin(true);
-    } catch {
-      setIsAdmin(false);
-    }
-  };
-
-  const fetchHistory = async () => {
-    if (isGuest) return;
-    try {
-      const res = await api.get(endpoints.history);
-      setDbHistory(res.data);
-    } catch (e) {
-      console.error(e);
-    }
-  };
 
   const handleClearHistory = () => {
     if (isGuest) {
@@ -117,7 +122,14 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
     formData.append('file', file);
 
     try {
-      const res = await api.post(endpoints.predict, formData);
+      const res = await api.post(endpoints.predict, formData, {
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const percent = Math.round((progressEvent.loaded / progressEvent.total) * 90);
+            setProgressPercent(Math.min(percent, 90));
+          }
+        }
+      });
 
       const newResult: AnalysisResult = {
         ...res.data,
@@ -159,11 +171,7 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
     });
 
     const formData = new FormData();
-    files.forEach(file => {
-      const filename = file.name;
-      const cleanFile = new File([file], filename, { type: file.type });
-      formData.append('files', cleanFile);
-    });
+    files.forEach(file => formData.append('files', file));
 
     setProgressText(`Wysyłam ${files.length} plików...`);
     setProgressPercent(30);
@@ -205,62 +213,9 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
       }
 
       setProgressPercent(100);
-    } catch (e: any) {
+    } catch (e) {
       console.error('Batch upload error:', e);
-      let message = 'Błąd batch upload';
-      if (e.response?.data?.detail) {
-        message = e.response.data.detail;
-      } else if (e.code === 'ECONNABORTED') {
-        message = 'Timeout - za dużo plików lub wolne połączenie. Spróbuj mniejszą porcję.';
-      } else if (e.message) {
-        message = e.message;
-      }
-      alert(`Błąd: ${message}`);
-    } finally {
-      setLoading(false);
-      setProgressText('');
-      setProgressPercent(0);
-    }
-  };
-
-  const handleFolderAnalyze = async (path: string, recursive: boolean) => {
-    if (isGuest) {
-      alert('Analiza folderów wymaga zalogowania.');
-      return;
-    }
-
-    setLoading(true);
-    setCurrentResult(null);
-    setBatchResults(null);
-    setProgressPercent(0);
-    setShowAdminPanel(false);
-
-    setProgressText(`Analizuję folder: ${path}`);
-    setProgressPercent(20);
-
-    try {
-      const res = await api.post<BatchUploadResponse>(endpoints.analyzeFolder, {
-        path,
-        recursive,
-        max_images: 100
-      });
-
-      setProgressPercent(90);
-
-      const response = res.data;
-      setBatchResults(response);
-
-      await fetchHistory();
-
-      if (response.results.length > 0) {
-        setCurrentResult(response.results[0]);
-      }
-
-      setProgressPercent(100);
-    } catch (e: any) {
-      console.error('Folder analysis error:', e);
-      const message = e.response?.data?.detail || 'Błąd analizy folderu';
-      alert(`Błąd: ${message}`);
+      alert(`Błąd: ${getErrorMessage(e, 'Błąd analizy wielu plików')}`);
     } finally {
       setLoading(false);
       setProgressText('');
@@ -271,6 +226,11 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
   const exportCsv = () => {
     if (!displayHistory.length) return;
 
+    const escapeCsv = (value: string | number): string => {
+      const s = String(value);
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+
     const headers = ["filename", "is_ai", "score", "confidence", "backbone", "model_type", "inference_ms", "timestamp"];
     const rows = displayHistory.map(item => [
       item.filename,
@@ -280,11 +240,11 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
       item.backbone_name,
       item.model_type,
       item.inference_time_ms.toFixed(0),
-      new Date(item.created_at).toLocaleString()
-    ]);
+      new Date(item.created_at).toISOString()
+    ].map(escapeCsv));
 
-    const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\r\n");
+    const blob = new Blob(["﻿" + csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -312,10 +272,10 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
           <div className="flex items-center gap-4">
             <button
               onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-              title="Zmień motyw"
+              title={theme === 'dark' ? 'Przełącz na jasny motyw' : 'Przełącz na ciemny motyw'}
               className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-zinc-500"
             >
-              {theme === 'dark' ? <Moon size={20} /> : <Sun size={20} />}
+              {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
             </button>
             <div className="h-4 w-[1px] bg-zinc-300 dark:bg-zinc-700"></div>
 
@@ -356,7 +316,6 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
               <UploadArea
                 onFileSelect={handleUpload}
                 onBatchUpload={handleBatchUpload}
-                onFolderAnalyze={isGuest ? undefined : handleFolderAnalyze}
                 isLoading={loading}
                 progress={progressPercent}
                 progressText={progressText}
@@ -457,7 +416,7 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
                       className="max-h-[400px] w-auto object-contain rounded-lg shadow-sm"
                     />
                   </div>
-                  <AnalysisResultCard data={currentResult} isGuest={isGuest} />
+                  <AnalysisResultCard data={currentResult} />
                   {isGuest && (
                     <p className="text-center text-xs text-zinc-400 mt-4 opacity-70">
                       * Tryb Gościa: Wyniki są tymczasowe.

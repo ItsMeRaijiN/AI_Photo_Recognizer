@@ -41,9 +41,9 @@ class TestMetricComputation:
         assert "error" in result
         assert "Metric Crash" in result["error"]
 
-    def test_compute_single_unknown_returns_none(self, loader: MetricsLoader):
-        result = loader.compute_single("missing_metric", Image.new("RGB", (10, 10)), 0.5)
-        assert result is None
+    def test_compute_all_without_metrics_returns_empty(self, loader: MetricsLoader):
+        result = loader.compute_all(Image.new("RGB", (10, 10)), 0.5)
+        assert result == {}
 
 class TestMetricLoading:
     def test_missing_directory_logs_warning(self, tmp_path: Path, caplog):
@@ -85,7 +85,7 @@ class TestMetricLoading:
         with patch.object(settings, "METRICS_DIR", metrics_dir):
             loader = MetricsLoader()
 
-        names = loader.get_metric_names()
+        names = loader.get_available_metrics()
         assert "plugin_ok" in names
         assert "plugin_bad" not in names
 
@@ -106,8 +106,8 @@ class TestMetricLoading:
         with patch.object(settings, "METRICS_DIR", metrics_dir):
             loader = MetricsLoader()
 
-        result = loader.compute_single("test_metric", Image.new("RGB", (10, 10)), 0.75)
+        results = loader.compute_all(Image.new("RGB", (10, 10)), 0.75, parallel=False)
 
-        assert result is not None
-        assert result["result"] is True
-        assert result["score"] == pytest.approx(0.75)
+        assert "test_metric" in results
+        assert results["test_metric"]["result"] is True
+        assert results["test_metric"]["score"] == pytest.approx(0.75)

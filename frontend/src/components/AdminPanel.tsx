@@ -1,6 +1,7 @@
 'use client';
 import React, { useState, useEffect, useRef } from 'react';
 import { api, endpoints } from '@/lib/api';
+import { getErrorMessage } from '@/lib/errors';
 import { User, SystemStats } from '@/lib/types';
 import {
   Trash2, Users, BarChart, Cpu, HardDrive,
@@ -48,8 +49,8 @@ export default function AdminPanel() {
     try {
       await api.delete(endpoints.adminUser(id));
       setUsers(users.filter(u => u.id !== id));
-    } catch (e: any) {
-      alert(e.response?.data?.detail || "Nie można usunąć użytkownika");
+    } catch (e) {
+      alert(getErrorMessage(e, "Nie można usunąć użytkownika"));
     } finally {
       setActionLoading(null);
     }
@@ -64,8 +65,8 @@ export default function AdminPanel() {
       setUsers(users.map(u =>
         u.id === id ? { ...u, is_superuser: !u.is_superuser } : u
       ));
-    } catch (e: any) {
-      alert(e.response?.data?.detail || "Błąd zmiany uprawnień");
+    } catch (e) {
+      alert(getErrorMessage(e, "Błąd zmiany uprawnień"));
     } finally {
       setActionLoading(null);
     }
@@ -76,9 +77,9 @@ export default function AdminPanel() {
     setActionLoading('cleanup');
     try {
       const res = await api.post(endpoints.adminCleanup);
-      alert(`Wyczyszczono:\n- Pliki temp: ${res.data.deleted_temp_files}\n- Stare zadania: ${res.data.deleted_old_jobs}\n- Osierocone analizy: ${res.data.deleted_orphan_analyses}`);
+      alert(`Wyczyszczono:\n- Pliki temp: ${res.data.deleted_temp_files}\n- Osierocone analizy: ${res.data.deleted_orphan_analyses}`);
       await fetchData();
-    } catch (e) {
+    } catch {
       alert("Błąd czyszczenia");
     } finally {
       setActionLoading(null);
@@ -91,7 +92,7 @@ export default function AdminPanel() {
       await api.post(endpoints.adminReloadMetrics);
       alert("Metryki przeładowane!");
       await fetchData();
-    } catch (e) {
+    } catch {
       alert("Błąd przeładowania metryk");
     } finally {
       setActionLoading(null);
@@ -103,8 +104,8 @@ export default function AdminPanel() {
     try {
       const res = await api.post(endpoints.adminOptimizeDb);
       alert(`Baza zoptymalizowana!\nRozmiar przed: ${res.data.size_before}\nRozmiar po: ${res.data.size_after}`);
-    } catch (e: any) {
-      alert(e.response?.data?.detail || "Błąd optymalizacji");
+    } catch (e) {
+      alert(getErrorMessage(e, "Błąd optymalizacji"));
     } finally {
       setActionLoading(null);
     }
@@ -132,8 +133,8 @@ export default function AdminPanel() {
       const res = await api.post(endpoints.adminUploadModel, formData);
       alert(`Model wgrany do: ${res.data.path}\n\nZrestartuj serwer aby załadować nowy model.`);
       e.target.value = '';
-    } catch (err: any) {
-      alert(err.response?.data?.detail || "Błąd wgrywania modelu");
+    } catch (err) {
+      alert(getErrorMessage(err, "Błąd wgrywania modelu"));
     } finally {
       setActionLoading(null);
     }
@@ -181,27 +182,9 @@ export default function AdminPanel() {
             <StatCard icon={<CheckCircle size={16} />} label="Model" value={stats.model_info?.loaded ? 'OK' : 'Błąd'} color={stats.model_info?.loaded ? 'green' : 'red'} subValue={stats.model_info?.backbone || 'brak'} />
           </div>
 
-          {stats.model_info && (
-            <div className="bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-4">
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                <InfoItem label="Backbone" value={stats.model_info.backbone} highlight />
-                <InfoItem label="Typ" value={stats.model_info.type.toUpperCase()} />
-                <InfoItem label="Próg detekcji" value={`${(stats.model_info.threshold * 100).toFixed(1)}%`} />
-                <InfoItem label="Urządzenie" value={stats.model_info.device.toUpperCase()} />
-                <InfoItem label="Status" value={stats.model_info.loaded ? 'Załadowany' : 'Błąd'} color={stats.model_info.loaded ? 'green' : 'red'} />
-              </div>
-            </div>
-          )}
-
           <div className="flex gap-3 flex-wrap">
             <button onClick={fetchData} className="bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition">
               <RefreshCw size={14} /> Odśwież dane
-            </button>
-            <button onClick={handleCleanup} disabled={actionLoading === 'cleanup'} className="bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 hover:bg-amber-200 dark:hover:bg-amber-900/50 transition disabled:opacity-50">
-              {actionLoading === 'cleanup' ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />} Wyczyść system
-            </button>
-            <button onClick={handleReloadMetrics} disabled={actionLoading === 'metrics'} className="bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 hover:bg-indigo-200 dark:hover:bg-indigo-900/50 transition disabled:opacity-50">
-              {actionLoading === 'metrics' ? <Loader2 size={14} className="animate-spin" /> : <Activity size={14} />} Przeładuj metryki
             </button>
           </div>
         </div>
@@ -381,11 +364,6 @@ function StatCard({ icon, label, value, subValue, color = 'default' }: { icon: R
       {subValue && <div className="text-xs text-zinc-400 mt-1">{subValue}</div>}
     </div>
   );
-}
-
-function InfoItem({ label, value, highlight = false, color }: { label: string; value: string; highlight?: boolean; color?: 'green' | 'red'; }) {
-  const valueColor = color === 'green' ? 'text-emerald-500' : color === 'red' ? 'text-red-500' : highlight ? 'text-indigo-500 dark:text-indigo-400' : 'text-zinc-700 dark:text-zinc-300';
-  return (<div><div className="text-[10px] text-zinc-400 uppercase">{label}</div><div className={`text-sm font-bold ${valueColor}`}>{value}</div></div>);
 }
 
 function ActionButton({ icon, label, description, color, onClick, loading = false }: { icon: React.ReactNode; label: string; description: string; color: 'amber' | 'indigo' | 'emerald' | 'red'; onClick: () => void; loading?: boolean; }) {

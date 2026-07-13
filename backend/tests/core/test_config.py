@@ -76,6 +76,5 @@ class TestSettings:
             CREATE_DIRS=False,
         )
 
-        assert settings.BATCH_MAX_WORKERS == 4
         assert settings.BATCH_INFERENCE_SIZE == 16
-        assert settings.BATCH_JOB_TTL_HOURS == 24
+        assert settings.MAX_UPLOAD_SIZE_MB == 20

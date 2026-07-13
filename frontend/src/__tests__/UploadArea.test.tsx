@@ -22,14 +22,15 @@ jest.mock('react-dropzone', () => ({
   },
 }));
 
+const alertMock = jest.fn();
+
 beforeAll(() => {
   global.fetch = jest.fn();
-  (globalThis as any).alert = jest.fn();
+  globalThis.alert = alertMock;
 });
 
 describe('UploadArea', () => {
   const mockOnFileSelect = jest.fn();
-  const mockOnFolderAnalyze = jest.fn().mockResolvedValue(undefined);
   const mockOnBatchUpload = jest.fn().mockResolvedValue(undefined);
 
   beforeEach(() => {
@@ -105,80 +106,11 @@ it('shows alert when selected folder/files contain no images', async () => {
 
   await user.upload(folderInput, nonImage);
 
-  expect((globalThis as any).alert).toHaveBeenCalledWith(
+  expect(alertMock).toHaveBeenCalledWith(
     'Nie znaleziono plików obrazów w wybranej lokalizacji.'
   );
   expect(mockOnFileSelect).not.toHaveBeenCalled();
 });
-
-  describe('folder analysis', () => {
-    it('does not render folder toggle when onFolderAnalyze is not provided', () => {
-      render(<UploadArea onFileSelect={mockOnFileSelect} isLoading={false} progress={0} />);
-      expect(screen.queryByText(/Analiza ścieżki/i)).not.toBeInTheDocument();
-    });
-
-    it('renders folder toggle when onFolderAnalyze is provided', () => {
-      render(
-        <UploadArea
-          onFileSelect={mockOnFileSelect}
-          onFolderAnalyze={mockOnFolderAnalyze}
-          isLoading={false}
-          progress={0}
-        />
-      );
-
-      expect(screen.getByText(/Analiza ścieżki/i)).toBeInTheDocument();
-    });
-
-    it('calls onFolderAnalyze with path and recursive flag', async () => {
-      const user = userEvent.setup();
-
-      render(
-        <UploadArea
-          onFileSelect={mockOnFileSelect}
-          onFolderAnalyze={mockOnFolderAnalyze}
-          isLoading={false}
-          progress={0}
-        />
-      );
-
-      await user.click(screen.getByText(/Analiza ścieżki/i));
-
-      const folderPathInput = screen.getByPlaceholderText(/Pictures|image\.jpg/i);
-      await user.type(folderPathInput, 'C:\\Images');
-
-      const checkbox = screen.getByRole('checkbox');
-      await user.click(checkbox);
-
-      const folderAnalyzeButton = screen.getAllByRole('button', { name: /Analizuj/i })[0];
-      expect(folderAnalyzeButton).not.toBeDisabled();
-
-      await user.click(folderAnalyzeButton);
-
-      await waitFor(() => {
-        expect(mockOnFolderAnalyze).toHaveBeenCalledTimes(1);
-        expect(mockOnFolderAnalyze).toHaveBeenCalledWith('C:\\Images', true);
-      });
-    });
-
-    it('disables folder analyze button when path is empty', async () => {
-      const user = userEvent.setup();
-
-      render(
-        <UploadArea
-          onFileSelect={mockOnFileSelect}
-          onFolderAnalyze={mockOnFolderAnalyze}
-          isLoading={false}
-          progress={0}
-        />
-      );
-
-      await user.click(screen.getByText(/Analiza ścieżki/i));
-
-      const folderAnalyzeButton = screen.getAllByRole('button', { name: /Analizuj/i })[0];
-      expect(folderAnalyzeButton).toBeDisabled();
-    });
-  });
 
   describe('URL upload', () => {
     let errSpy: jest.SpyInstance;
@@ -225,7 +157,7 @@ it('shows alert when selected folder/files contain no images', async () => {
       await user.click(screen.getAllByRole('button', { name: /Analizuj/i })[0]);
 
       await waitFor(() => {
-        expect((globalThis as any).alert).toHaveBeenCalled();
+        expect(alertMock).toHaveBeenCalled();
       });
     });
 
@@ -243,7 +175,7 @@ it('shows alert when selected folder/files contain no images', async () => {
       await user.click(screen.getAllByRole('button', { name: /Analizuj/i })[0]);
 
       await waitFor(() => {
-        expect((globalThis as any).alert).toHaveBeenCalled();
+        expect(alertMock).toHaveBeenCalled();
       });
     });
 
@@ -274,7 +206,9 @@ it('shows alert when selected folder/files contain no images', async () => {
 
     const pasted = new File(['img'], 'pasted.png', { type: 'image/png' });
 
-    const pasteEvent = new Event('paste') as any;
+    const pasteEvent = new Event('paste') as Event & {
+      clipboardData: { items: { type: string; getAsFile: () => File }[] };
+    };
     pasteEvent.clipboardData = {
       items: [
         {

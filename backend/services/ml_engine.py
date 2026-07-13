@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -79,15 +80,24 @@ class MLEngine:
         self._initialize()
         self._initialized = True
 
-    def _initialize(self) -> None:
-        self.device = torch.device(
-            settings.DEVICE if torch.cuda.is_available() or settings.DEVICE == "cpu"
-            else "cpu"
-        )
+    @staticmethod
+    def _resolve_device() -> torch.device:
+        requested = (settings.DEVICE or "cpu").lower()
 
-        if settings.DEVICE == "mps" and hasattr(torch.backends, "mps"):
-            if torch.backends.mps.is_available():
-                self.device = torch.device("mps")
+        if requested == "cuda" and torch.cuda.is_available():
+            return torch.device("cuda")
+
+        if (
+            requested == "mps"
+            and hasattr(torch.backends, "mps")
+            and torch.backends.mps.is_available()
+        ):
+            return torch.device("mps")
+
+        return torch.device("cpu")
+
+    def _initialize(self) -> None:
+        self.device = self._resolve_device()
 
         self.model_type = "unknown"
         self.backbone_name = "unknown"
@@ -116,12 +126,23 @@ class MLEngine:
 
         self._load_model()
 
+    @staticmethod
+    def _fingerprint_model_file(path: Path) -> str:
+        digest = hashlib.md5()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()[:16]
+
     def _load_model(self) -> None:
         model_path = settings.MODEL_PATH
 
         if model_path is None or not model_path.exists():
             logger.error(f"Model not found: {model_path}")
             return
+
+        self.model_version = self._fingerprint_model_file(model_path)
+        logger.info(f"Model fingerprint: {self.model_version}")
 
         meta_path = model_path.parent / "results.json"
         if meta_path.exists():
@@ -130,7 +151,6 @@ class MLEngine:
                     meta = json.load(f)
                     self.backbone_name = meta.get("backbone", "unknown")
                     self.threshold = meta.get("best_threshold", 0.5)
-                    self.model_version = meta.get("model_version")
                     logger.info(
                         f"Loaded metadata: backbone={self.backbone_name}, "
                         f"threshold={self.threshold:.4f}"
@@ -229,7 +249,10 @@ class MLEngine:
         )
 
     def _calculate_confidence(self, score: float) -> float:
-        return score if score >= 0.5 else 1.0 - score
+        t = self.threshold
+        if score >= t:
+            return 0.5 + (score - t) / (2 * (1.0 - t + 1e-10))
+        return 0.5 + (t - score) / (2 * (t + 1e-10))
 
     def _create_error_result(self, error: str) -> PredictionResult:
         return PredictionResult(
@@ -273,24 +296,32 @@ class MLEngine:
         scores: np.ndarray = np.array([])
         if valid_tensors:
             try:
-                batch_tensor = torch.stack(valid_tensors)
+                chunk_size = max(1, settings.BATCH_INFERENCE_SIZE)
+                chunk_scores: list[np.ndarray] = []
 
-                if self.model_type == "torch" and self.torch_model is not None:
-                    batch_tensor = batch_tensor.to(self.device)
-                    with torch.no_grad():
-                        outputs = self.torch_model(batch_tensor)
-                        scores = torch.sigmoid(outputs).cpu().numpy().flatten()
+                for start in range(0, len(valid_tensors), chunk_size):
+                    batch_tensor = torch.stack(valid_tensors[start:start + chunk_size])
 
-                elif self.model_type == "onnx" and self.onnx_session is not None:
-                    input_arr = batch_tensor.cpu().numpy()
-                    outputs = self.onnx_session.run(
-                        None, {self._onnx_input_name: input_arr}
-                    )
-                    raw_output = np.array(outputs[0]).flatten()
-                    scores = self._sigmoid(raw_output)
+                    if self.model_type == "torch" and self.torch_model is not None:
+                        batch_tensor = batch_tensor.to(self.device)
+                        with torch.no_grad():
+                            outputs = self.torch_model(batch_tensor)
+                            chunk_scores.append(
+                                torch.sigmoid(outputs).cpu().numpy().flatten()
+                            )
 
-                else:
-                    raise ValueError(f"Unknown model type: {self.model_type}")
+                    elif self.model_type == "onnx" and self.onnx_session is not None:
+                        input_arr = batch_tensor.cpu().numpy()
+                        outputs = self.onnx_session.run(
+                            None, {self._onnx_input_name: input_arr}
+                        )
+                        raw_output = np.array(outputs[0]).flatten()
+                        chunk_scores.append(self._sigmoid(raw_output))
+
+                    else:
+                        raise ValueError(f"Unknown model type: {self.model_type}")
+
+                scores = np.concatenate(chunk_scores)
 
             except Exception as e:
                 for i in valid_indices:
@@ -468,21 +499,6 @@ class MLEngine:
         finally:
             h_forward.remove()
             h_backward.remove()
-
-    def generate_heatmap_for_analysis(
-        self,
-        image: Image.Image,
-        analysis_id: int
-    ) -> str | None:
-        import uuid
-        filename = f"heatmap_{analysis_id}_{uuid.uuid4().hex[:8]}.jpg"
-        save_path = settings.HEATMAPS_DIR / filename
-
-        result = self.generate_heatmap(image, save_path)
-
-        if result and save_path.exists():
-            return str(save_path)
-        return None
 
     @property
     def is_loaded(self) -> bool:

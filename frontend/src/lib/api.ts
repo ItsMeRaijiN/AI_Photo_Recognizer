@@ -20,10 +20,12 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('token');
-        localStorage.removeItem('username');
+    if (error.response?.status === 401 && typeof window !== 'undefined') {
+      const hadToken = Boolean(localStorage.getItem('token'));
+      localStorage.removeItem('token');
+      localStorage.removeItem('username');
+      if (hadToken) {
+        window.dispatchEvent(new Event('auth:unauthorized'));
       }
     }
     return Promise.reject(error);
@@ -40,7 +42,6 @@ export const endpoints = {
 
   predict: '/analysis/predict',
   predictBatch: '/analysis/predict/batch',
-  analyzeFolder: '/analysis/folder',
   history: '/analysis/history',
 
   analysis: (id: number) => `/analysis/${id}`,
@@ -48,11 +49,6 @@ export const endpoints = {
 
   heatmap: (id: number, download = false) =>
     `/analysis/${id}/heatmap${download ? '?download=true' : ''}`,
-  saveHeatmap: (id: number) => `/analysis/${id}/heatmap/save`,
-
-  batchStart: '/analysis/batch/start',
-  batchStatus: (jobId: string) => `/analysis/batch/${jobId}`,
-  batchStream: (jobId: string) => `/analysis/batch/${jobId}/stream`,
 
   modelInfo: '/analysis/model/info',
   availableMetrics: '/analysis/metrics/available',
@@ -91,20 +87,3 @@ export async function uploadBatch(
   return response.data;
 }
 
-export interface FolderAnalysisOptions {
-  recursive?: boolean;
-  maxImages?: number;
-}
-
-export async function analyzeFolder(
-  path: string,
-  options?: FolderAnalysisOptions
-) {
-  const response = await api.post(endpoints.analyzeFolder, {
-    path,
-    recursive: options?.recursive ?? false,
-    max_images: options?.maxImages ?? 100
-  });
-
-  return response.data;
-}

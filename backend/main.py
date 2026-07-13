@@ -1,6 +1,4 @@
 """
-AI Photo Recognizer - FastAPI Application
-
 Main entry point for the backend API.
 """
 
@@ -30,7 +28,7 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Failed to create database tables")
     else:
-        logger.info("ℹSkipping table creation (AUTO_CREATE_TABLES=False)")
+        logger.info("Skipping table creation (AUTO_CREATE_TABLES=False)")
 
     app.state.ml_engine = None
     try:
@@ -40,7 +38,7 @@ async def lifespan(app: FastAPI):
         if ml_engine.is_loaded:
             logger.info("ML Model loaded: %s", ml_engine.backbone_name)
         else:
-            logger.warning("⚠ML Model not loaded!")
+            logger.warning("ML Model not loaded!")
     except Exception:
         logger.exception("Failed to initialize ML engine")
 
@@ -125,7 +123,6 @@ def health_check(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    logging.basicConfig(level=logging.INFO)
 
     uvicorn.run(
         "backend.main:app",

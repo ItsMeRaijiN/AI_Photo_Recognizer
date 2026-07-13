@@ -130,7 +130,6 @@ describe('Dashboard', () => {
     mockSessionStorage.clear();
     localStore['username'] = 'testuser';
 
-    // Domyślne odpowiedzi API
     mockGet.mockImplementation((url: string) => {
       if (url === '/admin/stats') return Promise.reject(new Error('Not admin'));
       if (url === '/analysis/history') return Promise.resolve({ data: mockHistory });
@@ -259,7 +258,11 @@ describe('Dashboard', () => {
       await user.click(screen.getByTestId('upload-single'));
 
       await waitFor(() => {
-        expect(mockPost).toHaveBeenCalledWith('/analysis/predict', expect.any(FormData));
+        expect(mockPost).toHaveBeenCalledWith(
+          '/analysis/predict',
+          expect.any(FormData),
+          expect.anything()
+        );
         expect(screen.getByTestId('analysis-result')).toBeInTheDocument();
       });
     });
@@ -390,7 +393,6 @@ describe('Dashboard', () => {
       let resolve: (v: unknown) => void;
       mockPost.mockReturnValueOnce(new Promise(r => { resolve = r; }));
 
-      const user = userEvent.setup();
       render(<Dashboard onLogoutAction={mockLogout} isGuest={false} />);
 
       await waitFor(() => expect(screen.getByTestId('upload-single')).toBeInTheDocument());

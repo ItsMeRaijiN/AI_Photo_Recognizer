@@ -4,14 +4,14 @@ AI Photo Recognizer - Analysis Schemas
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 
 class AnalysisResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
     id: int
     filename: str
@@ -33,6 +33,13 @@ class AnalysisResponse(BaseModel):
 
     created_at: datetime
 
+    @field_validator("created_at")
+    @classmethod
+    def ensure_utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
     @computed_field
     @property
     def has_heatmap(self) -> bool:
@@ -44,22 +51,6 @@ class AnalysisResponse(BaseModel):
         return f"{self.model_type}_{self.backbone_name}"
 
 
-class BatchRequest(BaseModel):
-    path: str = Field(description="Folder path to scan")
-    recursive: bool = Field(default=False, description="Scan subfolders")
-
-
-class FolderAnalysisRequest(BaseModel):
-    path: str = Field(description="Absolute path to folder or file")
-    recursive: bool = Field(default=False, description="Scan subfolders")
-    max_images: int = Field(
-        default=100,
-        ge=1,
-        le=100,
-        description="Maximum images to process",
-    )
-
-
 class BatchUploadResponse(BaseModel):
     total: int = Field(ge=0)
     processed: int = Field(ge=0)
@@ -69,14 +60,3 @@ class BatchUploadResponse(BaseModel):
     total_inference_time_ms: float = Field(ge=0.0)
 
 
-class JobStatusResponse(BaseModel):
-    job_id: str
-    status: str
-    total: int = Field(ge=0)
-    processed: int = Field(ge=0)
-    progress_percent: float = Field(ge=0.0, le=100.0)
-    current_file: str | None = None
-    errors: list[str] = Field(default_factory=list)
-    results: list[AnalysisResponse] = Field(default_factory=list)
-    started_at: datetime | None = None
-    completed_at: datetime | None = None

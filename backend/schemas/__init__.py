@@ -2,13 +2,7 @@
 AI Photo Recognizer - Pydantic Schemas
 """
 
-from .analysis import (
-    AnalysisResponse,
-    BatchRequest,
-    BatchUploadResponse,
-    FolderAnalysisRequest,
-    JobStatusResponse,
-)
+from .analysis import AnalysisResponse, BatchUploadResponse
 from .auth import (
     Token,
     TokenData,
@@ -20,10 +14,7 @@ from .auth import (
 
 __all__ = [
     "AnalysisResponse",
-    "BatchRequest",
     "BatchUploadResponse",
-    "FolderAnalysisRequest",
-    "JobStatusResponse",
     "Token",
     "TokenData",
     "UserCreate",

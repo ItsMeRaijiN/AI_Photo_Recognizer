@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { AnalysisResult, getModelDisplayName, isMetricSuspicious, MetricResult } from '@/lib/types';
 import { api, endpoints } from '@/lib/api';
+import { getErrorStatus } from '@/lib/errors';
 import {
   AlertTriangle, CheckCircle, Eye, Activity, Clock, Loader2,
   Ban, Download, ChevronDown, ChevronUp, AlertCircle, Cpu
@@ -11,10 +12,9 @@ import AuthImage from './AuthImage';
 
 interface Props {
   data: AnalysisResult;
-  isGuest?: boolean;
 }
 
-export default function AnalysisResultCard({ data, isGuest = false }: Props) {
+export default function AnalysisResultCard({ data }: Props) {
   const [heatmapUrl, setHeatmapUrl] = useState<string | null>(null);
   const [loadingHeatmap, setLoadingHeatmap] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -27,6 +27,11 @@ export default function AnalysisResultCard({ data, isGuest = false }: Props) {
     setError('');
     setLoadingHeatmap(false);
   }, [data.id, data.filename]);
+  useEffect(() => {
+    return () => {
+      if (heatmapUrl) URL.revokeObjectURL(heatmapUrl);
+    };
+  }, [heatmapUrl]);
 
   const fetchHeatmap = async () => {
     if (heatmapUrl) return;
@@ -36,16 +41,8 @@ export default function AnalysisResultCard({ data, isGuest = false }: Props) {
       const response = await api.get(endpoints.heatmap(data.id), { responseType: 'blob' });
       const url = URL.createObjectURL(response.data);
       setHeatmapUrl(url);
-
-      if (!isGuest && data.id > 0) {
-        try {
-          await api.post(endpoints.saveHeatmap(data.id));
-        } catch (e) {
-          console.warn('Could not auto-save heatmap');
-        }
-      }
-    } catch (e: any) {
-      if (e.response?.status === 400) {
+    } catch (e) {
+      if (getErrorStatus(e) === 400) {
         setError("Heatmapa niedostępna dla tego typu modelu.");
       } else {
         setError("Błąd generowania heatmapy.");
@@ -62,12 +59,13 @@ export default function AnalysisResultCard({ data, isGuest = false }: Props) {
       const url = URL.createObjectURL(response.data);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `heatmap_${data.filename}.jpg`;
+      const baseName = data.filename.replace(/\.[^.]+$/, '');
+      link.download = `heatmap_${baseName}.jpg`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-    } catch (e) {
+    } catch {
       alert("Błąd pobierania heatmapy.");
     } finally {
       setDownloading(false);
@@ -333,7 +331,7 @@ function MetricCard({ name, value }: { name: string; value: MetricResult }) {
   );
 }
 
-function formatMetricValue(value: any): string {
+function formatMetricValue(value: unknown): string {
   if (value === null || value === undefined) return 'N/A';
   if (typeof value === 'boolean') return value ? 'Tak' : 'Nie';
   if (typeof value === 'number') {

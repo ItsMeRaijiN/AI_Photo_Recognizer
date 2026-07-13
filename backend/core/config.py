@@ -9,7 +9,6 @@ logger = logging.getLogger(__name__)
 
 
 def _detect_device() -> str:
-    """Detect best available device"""
     try:
         import torch
         if torch.cuda.is_available():
@@ -22,7 +21,6 @@ def _detect_device() -> str:
 
 
 def _find_best_model(base_dir: Path) -> Path | None:
-    """Auto-discover the best model file in runs/ directory."""
     runs_dir = base_dir / "runs"
 
     if not runs_dir.exists():
@@ -55,14 +53,11 @@ def _find_best_model(base_dir: Path) -> Path | None:
 
 
 def _is_placeholder(value: str) -> bool:
-    """Check if a config value looks like a placeholder."""
     v = (value or "").strip().upper()
     return v.startswith("CHANGE-THIS") or v in {"", "DEFAULT", "SECRET", "PASSWORD"}
 
 
 class Settings(BaseSettings):
-    """Application settings with validation."""
-
     BASE_DIR: Path = Path(__file__).resolve().parents[2]
 
     CREATE_DIRS: bool = True
@@ -79,7 +74,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///aipr_storage.db"
     AUTO_CREATE_TABLES: bool = True
 
-    DEVICE: str = ""  # Will be auto-detected if DETECT_DEVICE is True
+    DEVICE: str = ""
 
     SECRET_KEY: str = "CHANGE-THIS-IN-PRODUCTION-USE-SECRETS"
     ALGORITHM: str = "HS256"
@@ -95,9 +90,8 @@ class Settings(BaseSettings):
 
     ALLOWED_EXTENSIONS: set[str] = {".png", ".jpg", ".jpeg", ".webp", ".heic", ".bmp", ".tiff"}
 
-    BATCH_MAX_WORKERS: int = 4
+    MAX_UPLOAD_SIZE_MB: int = 20
     BATCH_INFERENCE_SIZE: int = 16
-    BATCH_JOB_TTL_HOURS: int = 24
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -107,8 +101,6 @@ class Settings(BaseSettings):
     )
 
     def model_post_init(self, __context: Any) -> None:
-        """Initialize paths, device, and security checks after loading."""
-
         if not (self.BASE_DIR / "backend").exists():
             logger.warning("BASE_DIR might be incorrect. Could not find 'backend' folder at %s", self.BASE_DIR)
 

@@ -29,14 +29,14 @@ describe('AuthImage', () => {
       render(
         <AuthImage
           filePath="/some/path.jpg"
-          fallbackSrc="http://example.com/preview.jpg"
+          fallbackSrc="https://example.com/preview.jpg"
           alt="Preview"
         />
       );
 
       const img = screen.getByAltText('Preview');
       expect(img).toBeInTheDocument();
-      expect(img).toHaveAttribute('src', 'http://example.com/preview.jpg');
+      expect(img).toHaveAttribute('src', 'https://example.com/preview.jpg');
       expect(mockGet).not.toHaveBeenCalled();
     });
 
@@ -44,7 +44,7 @@ describe('AuthImage', () => {
       render(
         <AuthImage
           filePath="/path.jpg"
-          fallbackSrc="http://example.com/img.jpg"
+          fallbackSrc="https://example.com/img.jpg"
           alt="Test"
           className="w-full rounded-lg"
         />
@@ -192,7 +192,7 @@ describe('AuthImage', () => {
       render(
         <AuthImage
           filePath="/path.jpg"
-          fallbackSrc="http://example.com/img.jpg"
+          fallbackSrc="https://example.com/img.jpg"
           alt="Instant"
         />
       );

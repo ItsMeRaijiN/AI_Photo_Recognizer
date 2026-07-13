@@ -253,32 +253,11 @@ class MetricsLoader:
             results[name] = value
         return results
 
-    def compute_single(
-        self,
-        metric_name: str,
-        image: Image.Image,
-        score: float,
-        context: Any = None,
-    ) -> dict[str, Any] | None:
-        func = self._metrics.get(metric_name)
-        if func is None:
-            return None
-
-        image = self._resize_if_needed(image)
-        _, value = self._compute_single(metric_name, func, image, score, context)
-        return value
-
     def get_available_metrics(self) -> dict[str, dict[str, Any]]:
         return self._metric_info.copy()
-
-    def get_metric_names(self) -> list[str]:
-        return list(self._metrics.keys())
 
     @property
     def metric_count(self) -> int:
         return len(self._metrics)
-
-    def is_metric_available(self, name: str) -> bool:
-        return name in self._metrics
 
 metrics_engine = MetricsLoader()

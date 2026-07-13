@@ -27,7 +27,6 @@ jest.mock('../lib/api', () => ({
   },
   endpoints: {
     heatmap: (id: number, download = false) => `/analysis/${id}/heatmap${download ? '?download=true' : ''}`,
-    saveHeatmap: (id: number) => `/analysis/${id}/heatmap/save`,
   },
 }));
 
@@ -106,8 +105,6 @@ describe('AnalysisResultCard', () => {
         },
       });
       render(<AnalysisResultCard data={data} />);
-
-      // metric5 should be hidden initially
       expect(screen.queryByText('metric5')).not.toBeInTheDocument();
 
       await user.click(screen.getByText(/Pokaż wszystkie/));
@@ -134,7 +131,7 @@ describe('AnalysisResultCard', () => {
   describe('heatmap', () => {
     it('should disable heatmap button for guest (negative id)', () => {
       const data = createMockResult({ id: -1 });
-      render(<AnalysisResultCard data={data} isGuest={true} />);
+      render(<AnalysisResultCard data={data} />);
 
       expect(screen.getByRole('button', { name: /Pokaż GradCAM/i })).toBeDisabled();
       expect(screen.getByText(/Niedostępne dla gości/i)).toBeInTheDocument();
@@ -185,33 +182,17 @@ describe('AnalysisResultCard', () => {
       });
     });
 
-    it('should auto-save heatmap for logged in users', async () => {
-      const user = userEvent.setup();
-      const mockBlob = new Blob(['heatmap'], { type: 'image/jpeg' });
-      mockGet.mockResolvedValueOnce({ data: mockBlob });
-      mockPost.mockResolvedValueOnce({ data: { saved: true } });
-
-      const data = createMockResult({ id: 5 });
-      render(<AnalysisResultCard data={data} isGuest={false} />);
-
-      await user.click(screen.getByRole('button', { name: /Pokaż GradCAM/i }));
-
-      await waitFor(() => {
-        expect(mockPost).toHaveBeenCalledWith('/analysis/5/heatmap/save');
-      });
-    });
-
-    it('should NOT auto-save for guests', async () => {
+    it('should not issue extra requests beyond the heatmap GET', async () => {
       const user = userEvent.setup();
       mockGet.mockResolvedValueOnce({ data: new Blob(['x']) });
 
       const data = createMockResult({ id: 5 });
-      render(<AnalysisResultCard data={data} isGuest={true} />);
+      render(<AnalysisResultCard data={data} />);
 
       await user.click(screen.getByRole('button', { name: /Pokaż GradCAM/i }));
 
       await waitFor(() => {
-        expect(mockGet).toHaveBeenCalled();
+        expect(mockGet).toHaveBeenCalledWith('/analysis/5/heatmap', { responseType: 'blob' });
       });
       expect(mockPost).not.toHaveBeenCalled();
     });

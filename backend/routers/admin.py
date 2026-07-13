@@ -7,17 +7,16 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from backend.core.config import settings
+from backend.core.config import _is_placeholder, settings
 from backend.core.database import get_db
 from backend.core.security import get_password_hash
 from backend.models.analysis import Analysis
 from backend.models.user import User
 from backend.routers.deps import get_current_superuser
 from backend.schemas.auth import UserResponse
-from backend.services.batch_manager import batch_processor
 from backend.services.metrics_loader import metrics_engine
 
 logger = logging.getLogger(__name__)
@@ -25,7 +24,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 class BootstrapRequest(BaseModel):
-    """Request to create initial admin."""
     username: str = Field(min_length=3, max_length=50)
     password: str = Field(min_length=8, max_length=100)
     secret_token: str | None = Field(
@@ -34,6 +32,8 @@ class BootstrapRequest(BaseModel):
     )
 
 class SystemStats(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     total_users: int
     active_users: int
     total_analyses: int
@@ -48,7 +48,6 @@ class SystemStats(BaseModel):
 
 class CleanupResult(BaseModel):
     deleted_temp_files: int
-    deleted_old_jobs: int
     deleted_orphan_analyses: int
 
 
@@ -66,13 +65,19 @@ def create_initial_admin(
         )
 
     configured_token = getattr(settings, "ADMIN_BOOTSTRAP_TOKEN", None)
-    if configured_token and configured_token not in ("", "change-me-in-production"):
-        if req.secret_token != configured_token:
-            logger.warning(f"Bootstrap attempt with invalid token for user: {req.username}")
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid bootstrap token",
-            )
+
+    if not configured_token or _is_placeholder(configured_token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin bootstrap is disabled. Set ADMIN_BOOTSTRAP_TOKEN in the environment first.",
+        )
+
+    if req.secret_token != configured_token:
+        logger.warning(f"Bootstrap attempt with invalid token for user: {req.username}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid bootstrap token",
+        )
 
     if db.query(User).filter(User.username == req.username).first():
         raise HTTPException(
@@ -244,8 +249,6 @@ def cleanup_system(
                 except OSError:
                     pass
 
-    deleted_jobs = batch_processor.cleanup_old_jobs(max_age_hours=settings.BATCH_JOB_TTL_HOURS)
-
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
     orphans = db.query(Analysis).filter(
         Analysis.owner_id == None,
@@ -260,7 +263,6 @@ def cleanup_system(
 
     return CleanupResult(
         deleted_temp_files=deleted_temp,
-        deleted_old_jobs=deleted_jobs,
         deleted_orphan_analyses=deleted_orphans,
     )
 

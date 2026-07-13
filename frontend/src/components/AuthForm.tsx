@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { api, endpoints } from '@/lib/api';
+import { getErrorMessage } from '@/lib/errors';
 import { Lock, User, ArrowRight, UserPlus, LogIn, Ghost } from 'lucide-react';
 
 interface AuthFormProps {
@@ -35,8 +36,8 @@ export default function AuthForm({ onLoginAction, onGuestAction }: AuthFormProps
         localStorage.setItem('username', username);
         onLoginAction();
       }
-    } catch (err: any) {
-      setError(err.response?.data?.detail || "Błąd połączenia z serwerem");
+    } catch (err) {
+      setError(getErrorMessage(err, "Błąd połączenia z serwerem"));
     } finally {
       setLoading(false);
     }
@@ -67,6 +68,9 @@ export default function AuthForm({ onLoginAction, onGuestAction }: AuthFormProps
               value={username}
               onChange={e => setUsername(e.target.value)}
               disabled={loading}
+              autoComplete="username"
+              minLength={isRegister ? 3 : undefined}
+              maxLength={50}
             />
           </div>
           <div className="relative group">
@@ -78,6 +82,9 @@ export default function AuthForm({ onLoginAction, onGuestAction }: AuthFormProps
               value={password}
               onChange={e => setPassword(e.target.value)}
               disabled={loading}
+              autoComplete={isRegister ? 'new-password' : 'current-password'}
+              minLength={isRegister ? 6 : undefined}
+              maxLength={100}
             />
           </div>
 

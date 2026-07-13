@@ -166,37 +166,6 @@ class TestGradCAM:
             assert engine.generate_heatmap(Image.new("RGB", (224, 224))) is None
 
 
-    def test_heatmap_for_analysis_returns_none_when_generate_fails(self, engine, tmp_path: Path):
-        from backend.core.config import settings
-
-        with (
-            patch.object(settings, "HEATMAPS_DIR", tmp_path),
-            patch.object(engine, "generate_heatmap", return_value=None),
-        ):
-            out = engine.generate_heatmap_for_analysis(Image.new("RGB", (224, 224)), analysis_id=123)
-
-        assert out is None
-
-    def test_heatmap_for_analysis_saves_file(self, engine, tmp_path: Path):
-        from backend.core.config import settings
-
-        heatmap_img = Image.new("RGB", (10, 10))
-
-        def fake_generate(_img, save_path=None):
-            if save_path:
-                Path(save_path).write_bytes(b"x")
-            return heatmap_img
-
-        with (
-            patch.object(settings, "HEATMAPS_DIR", tmp_path),
-            patch.object(engine, "generate_heatmap", side_effect=fake_generate),
-        ):
-            out = engine.generate_heatmap_for_analysis(Image.new("RGB", (224, 224)), analysis_id=777)
-
-        assert out is not None
-        assert Path(out).exists()
-
-
 class TestModelInfo:
     def test_model_info_returns_correct_values(self, engine):
         prev_type = engine.model_type

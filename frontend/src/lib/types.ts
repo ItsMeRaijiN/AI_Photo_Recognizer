@@ -41,19 +41,6 @@ export interface BatchUploadResponse {
   total_inference_time_ms: number;
 }
 
-export interface JobStatusResponse {
-  job_id: string;
-  status: 'queued' | 'processing' | 'completed' | 'failed';
-  total: number;
-  processed: number;
-  progress_percent: number;
-  current_file?: string | null;
-  errors: string[];
-  results: AnalysisResult[];
-  started_at?: string | null;
-  completed_at?: string | null;
-}
-
 export interface User {
   id: number;
   username: string;
@@ -91,12 +78,6 @@ export interface ModelInfo {
   loaded: boolean;
 }
 
-export interface FolderAnalysisRequest {
-  path: string;
-  recursive: boolean;
-  max_images: number;
-}
-
 export function getModelDisplayName(result: AnalysisResult): string {
   const backbone = result.backbone_name || 'unknown';
   const type = result.model_type || 'unknown';
@@ -121,7 +102,6 @@ export function getModelDisplayName(result: AnalysisResult): string {
   return `${friendlyBackbone} (${type})`;
 }
 
-// Helper to check if metric indicates suspicious pattern
 export function isMetricSuspicious(value: MetricResult): boolean {
   if (value === null || value === undefined) return false;
   if (typeof value === 'object' && 'is_suspicious' in value) {
@@ -130,7 +110,6 @@ export function isMetricSuspicious(value: MetricResult): boolean {
   return false;
 }
 
-// Helper to format file size
 export function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 B';
   const k = 1024;
@@ -139,7 +118,6 @@ export function formatFileSize(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
-// Helper to format duration
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms.toFixed(0)}ms`;
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;

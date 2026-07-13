@@ -12,11 +12,12 @@ from backend.models.analysis import Analysis
 
 
 class TestAdminBootstrap:
-    def test_bootstrap_success(self, client: TestClient, test_db):
+    def test_bootstrap_success(self, client: TestClient, test_db, monkeypatch):
+        monkeypatch.setattr(settings, "ADMIN_BOOTSTRAP_TOKEN", "real-token-123", raising=False)
         payload = {
             "username": "superadmin",
             "password": "verysecretpassword123",
-            "secret_token": getattr(settings, "ADMIN_BOOTSTRAP_TOKEN", None),
+            "secret_token": "real-token-123",
         }
         response = client.post("/admin/bootstrap", json=payload)
         assert response.status_code == 201
@@ -26,6 +27,21 @@ class TestAdminBootstrap:
         payload = {"username": "hack", "password": "password123", "secret_token": "any"}
         response = client.post("/admin/bootstrap", json=payload)
         assert response.status_code == 400
+
+    def test_bootstrap_disabled_with_placeholder_token(
+        self, client: TestClient, test_db, monkeypatch
+    ):
+        monkeypatch.setattr(
+            settings, "ADMIN_BOOTSTRAP_TOKEN", "CHANGE-THIS-BOOTSTRAP-TOKEN", raising=False
+        )
+        payload = {
+            "username": "opportunist",
+            "password": "verysecretpassword123",
+            "secret_token": "CHANGE-THIS-BOOTSTRAP-TOKEN",
+        }
+        response = client.post("/admin/bootstrap", json=payload)
+        assert response.status_code == 403
+        assert "disabled" in response.json()["detail"].lower()
 
     def test_bootstrap_invalid_token_rejected(self, client: TestClient, test_db, monkeypatch):
         monkeypatch.setattr(settings, "ADMIN_BOOTSTRAP_TOKEN", "my-secret-token", raising=False)
@@ -123,13 +139,11 @@ class TestSystemCleanup:
         test_db.add(orphan)
         test_db.commit()
 
-        with patch("backend.routers.admin.batch_processor.cleanup_old_jobs", return_value=2):
-            response = client.post("/admin/cleanup", headers=admin_headers)
+        response = client.post("/admin/cleanup", headers=admin_headers)
 
         assert response.status_code == 200
         payload = response.json()
         assert payload["deleted_temp_files"] == 1
-        assert payload["deleted_old_jobs"] == 2
         assert payload["deleted_orphan_analyses"] == 1
 
 

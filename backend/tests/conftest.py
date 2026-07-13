@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 from typing import Generator
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -44,10 +44,12 @@ def _create_mock_ml_engine():
     mock.is_loaded = True
     mock.model_type = "torch"
     mock.backbone_name = "convnext"
+    mock.model_version = "test-fingerprint"
     mock.threshold = 0.5
     mock.model_info = {
         "type": "torch",
         "backbone": "convnext",
+        "version": "test-fingerprint",
         "threshold": 0.5,
         "device": "cpu",
         "loaded": True,
@@ -80,53 +82,35 @@ def _create_mock_metrics_engine():
     return mock
 
 
-def _create_mock_batch_processor():
-    mock = MagicMock()
-    mock.start_batch_job = AsyncMock(return_value="job-123")
-    mock.get_job_status.return_value = {
-        "status": "completed",
-        "total": 1,
-        "processed": 1,
-        "progress_percent": 100,
-        "results": [],
-        "errors": [],
-    }
-    mock.cleanup_old_jobs.return_value = 5
-    return mock
-
-
 @pytest.fixture(scope="function")
 def mock_ml_services():
     with (
         patch("backend.routers.analysis.ml_engine") as mock_ml,
         patch("backend.routers.analysis.metrics_engine") as mock_metrics,
-        patch("backend.routers.analysis.batch_processor") as mock_batch,
     ):
         ml = _create_mock_ml_engine()
         metrics = _create_mock_metrics_engine()
-        batch = _create_mock_batch_processor()
 
-        for attr in ["is_loaded", "model_type", "backbone_name", "threshold", "model_info",
-                     "predict", "predict_batch", "generate_heatmap"]:
+        for attr in ["is_loaded", "model_type", "backbone_name", "model_version",
+                     "threshold", "model_info", "predict", "predict_batch",
+                     "generate_heatmap"]:
             setattr(mock_ml, attr, getattr(ml, attr))
 
         for attr in ["metric_count", "compute_all", "get_available_metrics"]:
             setattr(mock_metrics, attr, getattr(metrics, attr))
 
-        for attr in ["start_batch_job", "get_job_status", "cleanup_old_jobs"]:
-            setattr(mock_batch, attr, getattr(batch, attr))
-
         yield {
             "ml": mock_ml,
             "metrics": mock_metrics,
-            "batch": mock_batch,
         }
 
 @pytest.fixture(scope="function")
 def client(test_db: Session, mock_ml_services) -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_db] = lambda: test_db
-
-    with patch.object(app.state, "ml_engine", mock_ml_services["ml"], create=True):
+    with (
+        patch("backend.services.ml_engine.ml_engine", mock_ml_services["ml"]),
+        patch("backend.services.metrics_loader.metrics_engine", mock_ml_services["metrics"]),
+    ):
         with TestClient(app) as test_client:
             yield test_client
 
