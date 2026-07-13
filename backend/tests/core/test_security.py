@@ -52,7 +52,9 @@ class TestJWTTokens:
 
     def test_decode_tampered_token_returns_none(self):
         token = create_access_token(subject="user")
-        tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+        header, payload, signature = token.split(".")
+        tampered_signature = ("A" if signature[0] != "A" else "B") + signature[1:]
+        tampered = ".".join((header, payload, tampered_signature))
         assert decode_token(tampered) is None
 
     def test_decode_token_payload_returns_full_payload(self):

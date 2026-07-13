@@ -1,16 +1,17 @@
 'use client';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTheme } from "next-themes";
 import { api, endpoints } from '@/lib/api';
 import { getErrorMessage } from '@/lib/errors';
-import { AnalysisResult, BatchUploadResponse } from '@/lib/types';
+import { AnalysisResult, BatchUploadResponse, ModelInfo } from '@/lib/types';
 import UploadArea from './UploadArea';
 import AnalysisResultCard from './AnalysisResult';
 import AdminPanel from './AdminPanel';
 import AuthImage from './AuthImage';
 import {
   LogOut, History, RefreshCcw, User, Ghost, Sun, Moon,
-  ShieldAlert, FileDown, Trash2, Cpu, Layers, AlertCircle, Clock
+  ShieldAlert, FileDown, Trash2, Cpu, Layers, AlertCircle, Clock,
+  ScanSearch, CircleCheck, Gauge
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -31,6 +32,8 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
   const [username, setUsername] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null);
+  const ownedPreviewUrls = useRef(new Set<string>());
 
   const [progressPercent, setProgressPercent] = useState(0);
   const [progressText, setProgressText] = useState('');
@@ -56,8 +59,18 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
     }
   }, [isGuest]);
 
+  const fetchModelInfo = useCallback(async () => {
+    try {
+      const res = await api.get(endpoints.modelInfo);
+      if (typeof res.data?.loaded === 'boolean') setModelInfo(res.data);
+    } catch {
+      setModelInfo(null);
+    }
+  }, []);
+
   useEffect(() => {
     setMounted(true);
+    fetchModelInfo();
     if (isGuest) {
       setUsername('Gość');
       try {
@@ -73,7 +86,34 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
       fetchHistory();
       checkAdmin();
     }
-  }, [isGuest, fetchHistory, checkAdmin]);
+  }, [isGuest, fetchHistory, checkAdmin, fetchModelInfo]);
+
+  useEffect(() => {
+    const urls = ownedPreviewUrls.current;
+    return () => {
+      urls.forEach(url => URL.revokeObjectURL(url));
+      urls.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (loading) return;
+    const referencedUrls = new Set<string>();
+    const collect = (result: AnalysisResult | null | undefined) => {
+      if (result?.previewUrl) referencedUrls.add(result.previewUrl);
+    };
+    collect(currentResult);
+    localHistory.forEach(collect);
+    dbHistory.forEach(collect);
+    batchResults?.results.forEach(collect);
+
+    ownedPreviewUrls.current.forEach(url => {
+      if (!referencedUrls.has(url)) {
+        URL.revokeObjectURL(url);
+        ownedPreviewUrls.current.delete(url);
+      }
+    });
+  }, [currentResult, localHistory, dbHistory, batchResults, loading]);
 
   useEffect(() => {
     if (isGuest && mounted) {
@@ -118,6 +158,7 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
     setProgressText(`Analizuję: ${file.name}`);
 
     const blobUrl = URL.createObjectURL(file);
+    ownedPreviewUrls.current.add(blobUrl);
     const formData = new FormData();
     formData.append('file', file);
 
@@ -146,6 +187,8 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
 
       setProgressPercent(100);
     } catch (e) {
+      URL.revokeObjectURL(blobUrl);
+      ownedPreviewUrls.current.delete(blobUrl);
       console.error(`Błąd przy pliku ${file.name}`, e);
       alert(`Błąd analizy: ${file.name}`);
     }
@@ -165,9 +208,11 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
 
     setProgressText(`Przygotowuję ${files.length} plików...`);
 
-    const blobUrls = new Map<string, string>();
-    files.forEach(file => {
-      blobUrls.set(file.name, URL.createObjectURL(file));
+    const blobUrls = new Map<number, string>();
+    files.forEach((file, index) => {
+      const objectUrl = URL.createObjectURL(file);
+      blobUrls.set(index, objectUrl);
+      ownedPreviewUrls.current.add(objectUrl);
     });
 
     const formData = new FormData();
@@ -192,10 +237,22 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
 
       const response = res.data;
 
-      const resultsWithPreviews = response.results.map(result => ({
-        ...result,
-        previewUrl: blobUrls.get(result.filename)
-      }));
+      const claimedIndexes = new Set<number>();
+      const resultsWithPreviews = response.results.map(result => {
+        const fallbackIndex = files.findIndex((file, index) =>
+          !claimedIndexes.has(index) && file.name === result.filename
+        );
+        const sourceIndex = result.source_index ?? fallbackIndex;
+        if (sourceIndex >= 0) claimedIndexes.add(sourceIndex);
+        return { ...result, previewUrl: blobUrls.get(sourceIndex) };
+      });
+
+      blobUrls.forEach((objectUrl, index) => {
+        if (!claimedIndexes.has(index)) {
+          URL.revokeObjectURL(objectUrl);
+          ownedPreviewUrls.current.delete(objectUrl);
+        }
+      });
 
       setBatchResults({
         ...response,
@@ -214,6 +271,10 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
 
       setProgressPercent(100);
     } catch (e) {
+      blobUrls.forEach(objectUrl => {
+        URL.revokeObjectURL(objectUrl);
+        ownedPreviewUrls.current.delete(objectUrl);
+      });
       console.error('Batch upload error:', e);
       alert(`Błąd: ${getErrorMessage(e, 'Błąd analizy wielu plików')}`);
     } finally {
@@ -258,48 +319,52 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
   if (!mounted) return null;
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-black text-zinc-900 dark:text-zinc-100 font-sans transition-colors duration-300">
-      <nav className="border-b border-zinc-200 dark:border-zinc-800 bg-white/80 dark:bg-zinc-950/80 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+    <div className="min-h-screen bg-[#f4f6f8] text-zinc-900 transition-colors duration-300 dark:bg-[#080a0f] dark:text-zinc-100">
+      <nav className="sticky top-0 z-50 border-b border-zinc-200/80 bg-white/85 backdrop-blur-xl dark:border-white/8 dark:bg-[#0b0d12]/85">
+        <div className="mx-auto flex h-[68px] max-w-[1440px] items-center justify-between px-4 sm:px-6 lg:px-8">
           <div
-            className="flex items-center gap-2 cursor-pointer"
+            className="flex cursor-pointer items-center gap-3"
             onClick={() => { setShowAdminPanel(false); setCurrentResult(null); setBatchResults(null); }}
           >
-            <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
-            <h1 className="text-lg font-bold tracking-tight">AI Photo Recognizer</h1>
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-md shadow-indigo-600/20">
+              <ScanSearch size={19} />
+            </span>
+            <div>
+              <h1 className="text-sm font-semibold tracking-tight sm:text-base">AI Photo Recognizer</h1>
+            </div>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1.5 sm:gap-3">
             <button
               onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
               title={theme === 'dark' ? 'Przełącz na jasny motyw' : 'Przełącz na ciemny motyw'}
-              className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors text-zinc-500"
+              className="rounded-lg p-2 text-zinc-500 transition-colors hover:bg-zinc-100 dark:hover:bg-zinc-800"
             >
               {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
             </button>
-            <div className="h-4 w-[1px] bg-zinc-300 dark:bg-zinc-700"></div>
+            <div className="mx-1 h-5 w-px bg-zinc-200 dark:bg-zinc-800" />
 
             {isAdmin && (
               <button
                 onClick={() => setShowAdminPanel(!showAdminPanel)}
                 title="Panel administratora"
-                className={`text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded transition flex items-center gap-2 
-                  ${showAdminPanel 
-                    ? 'bg-indigo-500 text-white' 
-                    : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 hover:text-indigo-400'}`}
+                className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition
+                  ${showAdminPanel
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-zinc-100 text-zinc-600 hover:text-indigo-600 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:text-indigo-400'}`}
               >
                 <ShieldAlert size={14} /> Admin
               </button>
             )}
 
-            <span className="text-sm text-zinc-500 flex items-center gap-2">
+            <span className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-zinc-500">
               {isGuest ? <Ghost size={14} /> : <User size={14} />}
               <span className="hidden md:inline">{username}</span>
             </span>
             <button
               onClick={onLogoutAction}
               title="Wyloguj"
-              className="text-sm text-zinc-500 hover:text-red-500 flex items-center gap-2 transition hover:bg-zinc-100 dark:hover:bg-zinc-800 px-3 py-1.5 rounded-md"
+              className="flex items-center gap-2 rounded-lg p-2 text-sm text-zinc-500 transition hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10 dark:hover:text-red-400 sm:px-3"
             >
               <LogOut size={16} />
             </button>
@@ -307,8 +372,35 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
         </div>
       </nav>
 
-      <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className={isGuest ? "lg:col-span-3 max-w-3xl mx-auto w-full" : "lg:col-span-2"}>
+      <main className="mx-auto max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <section className="mb-6 flex flex-col gap-5 rounded-3xl border border-zinc-200 bg-white px-5 py-5 shadow-sm dark:border-white/8 dark:bg-[#111318] sm:flex-row sm:items-center sm:justify-between sm:px-6">
+          <div>
+            <h2 className="mt-1 text-xl font-semibold tracking-[-0.02em] sm:text-2xl">
+              {showAdminPanel ? 'Centrum administracyjne' : 'Weryfikacja autentyczności obrazu'}
+            </h2>
+            <p className="mt-1 text-sm text-zinc-500">
+              {showAdminPanel ? 'Stan systemu, użytkownicy i konfiguracja modelu.' : 'Prześlij obraz, aby ocenić prawdopodobieństwo wygenerowania przez AI.'}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium ${
+              modelInfo?.loaded
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300'
+                : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300'
+            }`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${modelInfo?.loaded ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+              {modelInfo?.loaded ? 'Model gotowy' : 'Status modelu nieznany'}
+            </span>
+            {modelInfo?.loaded && (
+              <span className="hidden items-center gap-1.5 rounded-full border border-zinc-200 px-3 py-1.5 text-xs text-zinc-500 dark:border-zinc-700 sm:inline-flex">
+                <Gauge size={13} /> {modelInfo.backbone || modelInfo.type}
+              </span>
+            )}
+          </div>
+        </section>
+
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 lg:gap-7">
+        <div className="w-full lg:col-span-2">
           {showAdminPanel ? (
             <AdminPanel />
           ) : (
@@ -369,10 +461,10 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
                   <div className="max-h-48 overflow-y-auto space-y-2">
                     {batchResults.results.map((result, idx) => (
                       <div
-                        key={idx}
+                        key={`${result.source_index ?? idx}-${result.id}-${result.filename}`}
                         onClick={() => setCurrentResult(result)}
                         className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition
-                          ${currentResult?.filename === result.filename 
+                          ${currentResult?.source_index === result.source_index && currentResult?.filename === result.filename
                             ? 'bg-indigo-100 dark:bg-indigo-900/30 border border-indigo-300 dark:border-indigo-700' 
                             : 'bg-white dark:bg-black/20 hover:bg-zinc-50 dark:hover:bg-zinc-800/50'}`}
                       >
@@ -430,7 +522,7 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
         </div>
 
         {!showAdminPanel && (
-          <aside className="lg:h-[calc(100vh-120px)] lg:sticky lg:top-24 flex flex-col bg-white dark:bg-zinc-900/20 border border-zinc-200 dark:border-zinc-800 rounded-2xl p-5 shadow-sm">
+          <aside className="flex flex-col rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-white/8 dark:bg-[#111318] lg:sticky lg:top-24 lg:h-[calc(100vh-124px)]">
             <div className="flex items-center justify-between mb-4 pb-4 border-b border-zinc-200 dark:border-zinc-800">
               <h3 className="font-semibold flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
                 <History className="text-indigo-500" size={18} />
@@ -516,12 +608,15 @@ export default function Dashboard({ onLogoutAction, isGuest }: DashboardProps) {
 
               {displayHistory.length === 0 && (
                 <div className="text-center mt-10">
+                  <span className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-100 text-zinc-400 dark:bg-zinc-800"><CircleCheck size={18} /></span>
                   <p className="text-zinc-400 text-sm">Brak wyników.</p>
+                  <p className="mx-auto mt-1 max-w-[180px] text-xs leading-5 text-zinc-400">Pierwsza ukończona analiza pojawi się w tym miejscu.</p>
                 </div>
               )}
             </div>
           </aside>
         )}
+        </div>
       </main>
     </div>
   );

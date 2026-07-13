@@ -11,6 +11,8 @@ Web application that detects AI-generated images. A fine-tuned CNN (EfficientNet
 - Guest mode with session-local history
 - Admin panel: user management, system stats, model upload, DB maintenance
 - PyTorch (`.pt`) and ONNX (`.onnx`) model support, CPU/CUDA/MPS
+- Streaming upload limits, image dimension checks, safe checkpoint validation, and model/metrics-aware result caching
+- Responsive light/dark workspace with explicit model status and polished empty, loading, result, and error states
 
 ## Tech stack
 
@@ -18,7 +20,7 @@ Web application that detects AI-generated images. A fine-tuned CNN (EfficientNet
 |---|---|
 | Backend | Python 3.12, FastAPI, SQLAlchemy 2 (SQLite), Pydantic 2, PyTorch / ONNX Runtime, timm, OpenCV, Pillow |
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4, framer-motion, axios |
-| Tests | pytest (101 tests), Jest + Testing Library (128 tests) |
+| Tests | pytest (107 tests), Jest + Testing Library (121 tests) |
 
 ## Repository layout
 
@@ -28,7 +30,7 @@ backend/
   models/          # SQLAlchemy models (User, Analysis)
   routers/         # auth, analysis, admin endpoints
   schemas/         # Pydantic request/response models
-  services/        # ML engine, batch processor, metrics loader
+  services/        # ML engine and pluggable metrics loader
   custom_metrics/  # pluggable image-forensics metrics
   ml/              # training & evaluation scripts
   tests/

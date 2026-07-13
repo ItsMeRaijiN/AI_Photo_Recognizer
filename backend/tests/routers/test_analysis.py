@@ -11,6 +11,18 @@ from PIL import Image
 from backend.models.analysis import Analysis
 
 
+class TestAnalysisMetadata:
+    def test_model_info_static_route_is_reachable(self, client: TestClient):
+        resp = client.get("/analysis/model/info")
+        assert resp.status_code == 200
+        assert resp.json()["version"] == "test-fingerprint"
+
+    def test_metrics_static_route_is_reachable(self, client: TestClient):
+        resp = client.get("/analysis/metrics/available")
+        assert resp.status_code == 200
+        assert "blur" in resp.json()
+
+
 class TestPredictSingle:
     def test_predict_guest_user(self, client: TestClient, sample_image_bytes: bytes):
         files = {"file": ("test.png", sample_image_bytes, "image/png")}
@@ -24,6 +36,15 @@ class TestPredictSingle:
         files = {"file": ("bad.png", b"not-an-image", "image/png")}
         resp = client.post("/analysis/predict", headers=auth_headers, files=files)
         assert resp.status_code == 400
+
+    def test_predict_rejects_invalid_optional_token(self, client: TestClient, sample_image_bytes: bytes):
+        files = {"file": ("test.png", sample_image_bytes, "image/png")}
+        resp = client.post(
+            "/analysis/predict",
+            headers={"Authorization": "Bearer invalid-token"},
+            files=files,
+        )
+        assert resp.status_code == 401
 
     def test_predict_cache_hit_same_model(self, client: TestClient, auth_headers: dict, test_db, test_user):
         img = Image.new("RGB", (16, 16), color=(10, 20, 30))
@@ -47,6 +68,7 @@ class TestPredictSingle:
             backbone_name="convnext",
             model_version="test-fingerprint",
             threshold_used=0.5,
+            custom_metrics={"__metrics_version": "test-metrics-fingerprint"},
             created_at=datetime.now(timezone.utc),
             owner_id=test_user.id,
         )
@@ -91,12 +113,50 @@ class TestPredictSingle:
         assert resp.status_code == 200
         assert resp.json()["score"] == 0.95
 
+    def test_predict_cache_miss_for_changed_metrics(
+        self, client: TestClient, auth_headers: dict, test_db, test_user
+    ):
+        img = Image.new("RGB", (16, 16), color=(80, 90, 100))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        payload = buf.getvalue()
+        from backend.routers.analysis import compute_file_hash
+
+        test_db.add(Analysis(
+            filename="old-metrics.png", file_hash=compute_file_hash(payload),
+            file_path="/tmp/old-metrics.png", is_ai=True, score=0.99, confidence=0.99,
+            inference_time_ms=12.0, model_type="torch", backbone_name="convnext",
+            model_version="test-fingerprint", threshold_used=0.5,
+            custom_metrics={"__metrics_version": "old-metrics"},
+            created_at=datetime.now(timezone.utc), owner_id=test_user.id,
+        ))
+        test_db.commit()
+
+        resp = client.post(
+            "/analysis/predict", headers=auth_headers,
+            files={"file": ("old-metrics.png", payload, "image/png")},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["score"] == 0.95
+
     def test_predict_rejects_oversized_upload(self, client: TestClient):
         from backend.core.config import settings
 
         oversized = b"x" * (settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024 + 1)
         files = {"file": ("big.png", oversized, "image/png")}
         resp = client.post("/analysis/predict", files=files)
+        assert resp.status_code == 413
+
+    def test_predict_rejects_excessive_pixel_count(self, client: TestClient, monkeypatch):
+        from backend.core.config import settings
+
+        img = Image.new("RGB", (11, 11), color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        monkeypatch.setattr(settings, "MAX_IMAGE_PIXELS", 100)
+
+        resp = client.post("/analysis/predict", files={"file": ("pixels.png", buf.getvalue(), "image/png")})
         assert resp.status_code == 413
 
 
@@ -116,6 +176,18 @@ class TestPredictBatch:
         body = resp.json()
         assert "results" in body
         assert "errors" in body
+
+    def test_batch_preserves_source_indexes_for_duplicate_names(
+        self, client: TestClient, auth_headers: dict, sample_image_bytes: bytes
+    ):
+        files = [
+            ("files", ("same.png", sample_image_bytes, "image/png")),
+            ("files", ("same.png", sample_image_bytes, "image/png")),
+        ]
+        resp = client.post("/analysis/predict/batch", headers=auth_headers, files=files)
+
+        assert resp.status_code == 200
+        assert [item["source_index"] for item in resp.json()["results"]] == [0, 1]
 
 
 class TestHistory:
@@ -217,6 +289,8 @@ class TestAnalysisImage:
     def test_get_image_success(
         self, client: TestClient, auth_headers: dict, test_db, test_user, tmp_path: Path
     ):
+        from backend.core.config import settings
+
         img = tmp_path / "x.png"
         img.write_bytes(b"image_data")
 
@@ -237,7 +311,8 @@ class TestAnalysisImage:
         test_db.commit()
         test_db.refresh(a)
 
-        resp = client.get(f"/analysis/{a.id}/image", headers=auth_headers)
+        with patch.object(settings, "UPLOAD_DIR", tmp_path):
+            resp = client.get(f"/analysis/{a.id}/image", headers=auth_headers)
         assert resp.status_code == 200
 
     def test_get_image_file_missing(
@@ -286,6 +361,7 @@ class TestHeatmap:
             inference_time_ms=5.0,
             model_type="torch",
             backbone_name="effnet",
+            model_version="test-fingerprint",
             owner_id=test_user.id,
             heatmap_path=str(hm),
             created_at=datetime.now(timezone.utc),
@@ -294,9 +370,28 @@ class TestHeatmap:
         test_db.commit()
         test_db.refresh(a)
 
-        resp = client.get(f"/analysis/{a.id}/heatmap", headers=auth_headers)
+        from backend.core.config import settings
+
+        with patch.object(settings, "HEATMAPS_DIR", tmp_path):
+            resp = client.get(f"/analysis/{a.id}/heatmap", headers=auth_headers)
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("image/")
+
+    def test_rejects_heatmap_from_different_model(
+        self, client: TestClient, auth_headers: dict, test_db, test_user
+    ):
+        a = Analysis(
+            filename="old.png", file_hash="old", file_path="/tmp/old.png",
+            is_ai=True, score=0.9, confidence=0.9, inference_time_ms=5.0,
+            model_type="torch", backbone_name="effnet", model_version="old-model",
+            owner_id=test_user.id, created_at=datetime.now(timezone.utc),
+        )
+        test_db.add(a)
+        test_db.commit()
+        test_db.refresh(a)
+
+        resp = client.get(f"/analysis/{a.id}/heatmap", headers=auth_headers)
+        assert resp.status_code == 409
 
 
     def test_generated_heatmap_is_persisted(
@@ -316,6 +411,7 @@ class TestHeatmap:
             inference_time_ms=5.0,
             model_type="torch",
             backbone_name="effnet",
+            model_version="test-fingerprint",
             owner_id=test_user.id,
             heatmap_path=None,
             created_at=datetime.now(timezone.utc),
@@ -326,7 +422,10 @@ class TestHeatmap:
 
         from backend.core.config import settings
 
-        with patch.object(settings, "HEATMAPS_DIR", tmp_path):
+        with (
+            patch.object(settings, "UPLOAD_DIR", tmp_path),
+            patch.object(settings, "HEATMAPS_DIR", tmp_path),
+        ):
             resp = client.get(f"/analysis/{a.id}/heatmap", headers=auth_headers)
 
         assert resp.status_code == 200

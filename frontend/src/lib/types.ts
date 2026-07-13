@@ -19,6 +19,7 @@ export interface AnalysisResult {
   custom_metrics?: Record<string, MetricResult> | null;
 
   created_at: string;
+  source_index?: number | null;
 
   previewUrl?: string;
 
@@ -76,6 +77,7 @@ export interface ModelInfo {
   threshold: number;
   device: string;
   loaded: boolean;
+  image_size?: number;
 }
 
 export function getModelDisplayName(result: AnalysisResult): string {

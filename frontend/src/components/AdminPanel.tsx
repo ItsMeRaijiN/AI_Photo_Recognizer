@@ -157,15 +157,15 @@ export default function AdminPanel() {
 
   return (
     <div className="space-y-6">
-      <div className="flex gap-2 flex-wrap">
+      <div className="rounded-2xl border border-zinc-200 bg-white p-1.5 shadow-sm dark:border-white/8 dark:bg-[#111318] flex gap-1 flex-wrap">
         {tabs.map(tab => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition ${
               activeTab === tab.id
-                ? 'bg-indigo-500 text-white'
-                : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+                ? 'bg-indigo-500 text-white shadow-sm'
+                : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-white/5'
             }`}
           >
             {tab.icon} {tab.label}
@@ -191,8 +191,8 @@ export default function AdminPanel() {
       )}
 
       {activeTab === 'users' && (
-        <div className="bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden">
-          <div className="p-4 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950/50 flex items-center justify-between">
+        <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-white/8 dark:bg-[#111318]">
+          <div className="flex items-center justify-between border-b border-zinc-200 bg-zinc-50/70 p-4 dark:border-white/8 dark:bg-white/[0.02]">
             <span className="font-semibold text-zinc-700 dark:text-zinc-300 flex items-center gap-2">
               <Users size={16} /> Zarządzanie Użytkownikami ({users.length})
             </span>
@@ -245,7 +245,7 @@ export default function AdminPanel() {
 
       {activeTab === 'model' && (
         <div className="space-y-6">
-          <div className="bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-white/8 dark:bg-[#111318]">
             <h4 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4 flex items-center gap-2">
               <Cpu size={16} className="text-indigo-500" /> Aktualnie załadowany model
             </h4>
@@ -276,7 +276,7 @@ export default function AdminPanel() {
             )}
           </div>
 
-          <div className="bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-white/8 dark:bg-[#111318]">
             <h4 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4 flex items-center gap-2">
               <Upload size={16} className="text-emerald-500" /> Wgraj nowy model
             </h4>
@@ -298,8 +298,8 @@ export default function AdminPanel() {
               </button>
             </div>
             <p className="text-xs text-zinc-500 mt-3">
-              Model zostanie zapisany w <code className="bg-zinc-200 dark:bg-zinc-800 px-1 rounded">runs/experiment/</code>.
-              Po wgraniu zrestartuj serwer.
+              Przed zapisaniem plik jest sprawdzany jako bezpieczny checkpoint PyTorch lub poprawny model ONNX.
+              Nowa wersja zacznie działać po restarcie serwera.
             </p>
           </div>
         </div>
@@ -307,7 +307,7 @@ export default function AdminPanel() {
 
       {activeTab === 'settings' && (
         <div className="space-y-6">
-          <div className="bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-white/8 dark:bg-[#111318]">
             <h4 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4 flex items-center gap-2">
               <Settings size={16} className="text-indigo-500" /> Akcje systemowe
             </h4>
@@ -315,7 +315,7 @@ export default function AdminPanel() {
               <ActionButton
                 icon={<Trash2 size={16} />}
                 label="Wyczyść pliki tymczasowe"
-                description="Usuwa cache, pliki temp i stare zadania batch"
+                description="Usuwa pliki tymczasowe i rekordy bez powiązanych plików"
                 color="amber"
                 onClick={handleCleanup}
                 loading={actionLoading === 'cleanup'}
@@ -323,7 +323,7 @@ export default function AdminPanel() {
               <ActionButton
                 icon={<Activity size={16} />}
                 label="Przeładuj metryki"
-                description="Odświeża custom metrics z folderu backend/custom_metrics"
+                description="Bezpiecznie odświeża aktywne metryki rozszerzone"
                 color="indigo"
                 onClick={handleReloadMetrics}
                 loading={actionLoading === 'metrics'}
@@ -338,7 +338,7 @@ export default function AdminPanel() {
               />
             </div>
           </div>
-          <div className="bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl p-5">
+          <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-white/8 dark:bg-[#111318]">
             <h4 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-4 flex items-center gap-2">
               <Zap size={16} className="text-indigo-500" /> Informacje API
             </h4>
@@ -358,7 +358,7 @@ export default function AdminPanel() {
 function StatCard({ icon, label, value, subValue, color = 'default' }: { icon: React.ReactNode; label: string; value: string | number; subValue?: string; color?: 'default' | 'red' | 'green'; }) {
   const colorClasses = { default: 'text-zinc-800 dark:text-white', red: 'text-red-500 dark:text-red-400', green: 'text-emerald-500 dark:text-emerald-400' };
   return (
-    <div className="bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-4 rounded-xl">
+    <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-white/8 dark:bg-[#111318]">
       <div className="text-zinc-500 text-xs uppercase font-bold flex items-center gap-2 mb-2">{icon} {label}</div>
       <div className={`text-2xl font-mono font-bold ${colorClasses[color]}`}>{value}</div>
       {subValue && <div className="text-xs text-zinc-400 mt-1">{subValue}</div>}

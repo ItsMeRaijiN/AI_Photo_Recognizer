@@ -45,6 +45,7 @@ jest.mock('../components/AnalysisResult', () => {
       <div data-testid="analysis-result">
         <span data-testid="result-filename">{data.filename}</span>
         <span data-testid="result-verdict">{data.is_ai ? 'AI' : 'REAL'}</span>
+        <span data-testid="result-preview">{data.previewUrl || ''}</span>
       </div>
     );
   };
@@ -304,6 +305,33 @@ describe('Dashboard', () => {
         );
         expect(screen.getByText(/Wyniki Batch/)).toBeInTheDocument();
       });
+    });
+
+    it('should map previews by source index when filenames are duplicated', async () => {
+      const user = userEvent.setup();
+      (global.URL.createObjectURL as jest.Mock)
+        .mockReturnValueOnce('blob:first')
+        .mockReturnValueOnce('blob:second');
+      mockPost.mockImplementation((url: string) => {
+        if (url === '/analysis/predict/batch') {
+          return Promise.resolve({ data: {
+            total: 2, processed: 2, failed: 0, errors: [], total_inference_time_ms: 20,
+            results: [
+              { ...mockResult, id: 10, filename: 'same.jpg', source_index: 0 },
+              { ...mockResult, id: 11, filename: 'same.jpg', source_index: 1 },
+            ],
+          }});
+        }
+        return Promise.resolve({ data: mockResult });
+      });
+
+      render(<Dashboard onLogoutAction={mockLogout} isGuest={true} />);
+      await user.click(await screen.findByTestId('upload-batch'));
+      await waitFor(() => expect(screen.getByTestId('result-preview')).toHaveTextContent('blob:first'));
+      const duplicateRows = screen.getAllByText('same.jpg');
+      await user.click(duplicateRows[duplicateRows.length - 1]);
+
+      expect(screen.getByTestId('result-preview')).toHaveTextContent('blob:second');
     });
   });
 

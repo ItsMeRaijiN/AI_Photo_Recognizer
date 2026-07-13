@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,15 @@ from torchvision import models, transforms
 from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _with_inference_lock(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._inference_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
 
 try:
     import timm
@@ -97,25 +108,20 @@ class MLEngine:
         return torch.device("cpu")
 
     def _initialize(self) -> None:
+        self._inference_lock = threading.RLock()
         self.device = self._resolve_device()
 
         self.model_type = "unknown"
         self.backbone_name = "unknown"
         self.model_version: str | None = None
         self.threshold = 0.5
+        self.image_size = 224
 
         self.torch_model: nn.Module | None = None
         self.onnx_session: Any = None
         self._onnx_input_name: str | None = None
 
-        self.transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
-        ])
+        self._configure_transform()
 
         logger.info("ML Engine initializing...")
         logger.info(f"  Device: {self.device}")
@@ -126,9 +132,26 @@ class MLEngine:
 
         self._load_model()
 
+    def _configure_transform(self) -> None:
+        self.transform = transforms.Compose([
+            transforms.Resize((self.image_size, self.image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )
+        ])
+
+    @staticmethod
+    def _validate_image_size(value: Any) -> int:
+        image_size = int(value)
+        if not 32 <= image_size <= 4096:
+            raise ValueError("Model image_size must be between 32 and 4096 pixels")
+        return image_size
+
     @staticmethod
     def _fingerprint_model_file(path: Path) -> str:
-        digest = hashlib.md5()
+        digest = hashlib.sha256()
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(1024 * 1024), b""):
                 digest.update(chunk)
@@ -158,14 +181,29 @@ class MLEngine:
             except Exception as e:
                 logger.warning(f"Could not load metadata: {e}")
 
+        config_path = model_path.parent / "config.json"
+        if config_path.exists():
+            try:
+                with open(config_path, "r") as f:
+                    model_config = json.load(f)
+                if self.backbone_name == "unknown":
+                    self.backbone_name = model_config.get("backbone", "unknown")
+                self.image_size = self._validate_image_size(
+                    model_config.get("image_size", self.image_size)
+                )
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as e:
+                logger.warning(f"Could not load model config: {e}")
+
         if str(model_path).endswith(".onnx"):
             self._load_onnx(model_path)
         else:
             self._load_pytorch(model_path)
 
+        self._configure_transform()
+
     def _load_pytorch(self, path: Path) -> None:
         try:
-            checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+            checkpoint = torch.load(path, map_location=self.device, weights_only=True)
 
             if isinstance(checkpoint, dict):
                 config = checkpoint.get("config", {})
@@ -174,6 +212,9 @@ class MLEngine:
                         self.backbone_name = config.get("backbone", "effnetv2")
                     if self.threshold == 0.5:
                         self.threshold = checkpoint.get("best_threshold", 0.5)
+                    self.image_size = self._validate_image_size(
+                        config.get("image_size", self.image_size)
+                    )
 
             backbone = (self.backbone_name or "unknown").lower()
             logger.info(f"Loading backbone: {self.backbone_name}")
@@ -231,6 +272,9 @@ class MLEngine:
 
             self.onnx_session = ort.InferenceSession(str(path), providers=providers)
             self._onnx_input_name = self.onnx_session.get_inputs()[0].name
+            input_shape = self.onnx_session.get_inputs()[0].shape
+            if len(input_shape) >= 4 and isinstance(input_shape[-1], int):
+                self.image_size = self._validate_image_size(input_shape[-1])
             self.model_type = "onnx"
 
             if self.backbone_name == "unknown":
@@ -266,6 +310,7 @@ class MLEngine:
             error=error
         )
 
+    @_with_inference_lock
     def predict_batch(
         self,
         images: list[Image.Image],
@@ -359,6 +404,7 @@ class MLEngine:
 
         return results
 
+    @_with_inference_lock
     def predict(self, image: Image.Image) -> PredictionResult:
         if self.model_type == "unknown":
             return self._create_error_result("Model not loaded")
@@ -430,6 +476,7 @@ class MLEngine:
             logger.warning(f"Could not find GradCAM target layer for {backbone}: {e}")
             return None
 
+    @_with_inference_lock
     def generate_heatmap(
         self,
         image: Image.Image,
@@ -511,6 +558,7 @@ class MLEngine:
             "backbone": self.backbone_name,
             "version": self.model_version,
             "threshold": self.threshold,
+            "image_size": self.image_size,
             "device": str(self.device),
             "loaded": self.is_loaded,
         }

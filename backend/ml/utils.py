@@ -90,7 +90,7 @@ class HashCache:
     """
     def __init__(self, cache_path: str = "runs/hash_cache.pkl"):
         self.cache_path = cache_path
-        self.cache: dict[str, dict[str, str]] = {'md5': {}, 'phash': {}}
+        self.cache: dict[str, dict[str, Any]] = {'md5': {}, 'phash': {}}
         self._dirty = False
         self._load()
 
@@ -132,25 +132,47 @@ class HashCache:
 
     def get_md5(self, path: str) -> str | None:
         abs_path = os.path.abspath(path)
-        if abs_path in self.cache['md5']:
-            return self.cache['md5'][abs_path]
+        signature = self._signature(abs_path)
+        cached = self.cache['md5'].get(abs_path)
+        if self._entry_matches(cached, signature):
+            return cached['value']
 
         h = calculate_file_hash(abs_path)
-        if h:
-            self.cache['md5'][abs_path] = h
+        if h and signature:
+            self.cache['md5'][abs_path] = {"value": h, **signature}
             self._dirty = True
         return h
 
     def get_phash(self, path: str) -> str | None:
         abs_path = os.path.abspath(path)
-        if abs_path in self.cache['phash']:
-            return self.cache['phash'][abs_path]
+        signature = self._signature(abs_path)
+        cached = self.cache['phash'].get(abs_path)
+        if self._entry_matches(cached, signature):
+            return cached['value']
 
         h = calculate_perceptual_hash(abs_path)
-        if h:
-            self.cache['phash'][abs_path] = h
+        if h and signature:
+            self.cache['phash'][abs_path] = {"value": h, **signature}
             self._dirty = True
         return h
+
+    @staticmethod
+    def _signature(path: str) -> dict[str, int] | None:
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return None
+        return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+    @staticmethod
+    def _entry_matches(entry: Any, signature: dict[str, int] | None) -> bool:
+        return bool(
+            signature
+            and isinstance(entry, dict)
+            and isinstance(entry.get("value"), str)
+            and entry.get("size") == signature["size"]
+            and entry.get("mtime_ns") == signature["mtime_ns"]
+        )
 
 
 def get_dataloader_kwargs(
@@ -268,15 +290,15 @@ def calculate_metrics(
             pass
 
     return {
-        "cm": cm,
-        "f1": f1_score(y_true, y_pred_binary, zero_division=0),
-        "accuracy": accuracy_score(y_true, y_pred_binary),
-        "precision": precision_score(y_true, y_pred_binary, zero_division=0),
-        "recall": recall_score(y_true, y_pred_binary, zero_division=0),
-        "auc": auc,
-        "sensitivity": sensitivity,
-        "specificity": specificity,
-        "threshold": threshold,
+        "cm": cm.tolist(),
+        "f1": float(f1_score(y_true, y_pred_binary, zero_division=0)),
+        "accuracy": float(accuracy_score(y_true, y_pred_binary)),
+        "precision": float(precision_score(y_true, y_pred_binary, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred_binary, zero_division=0)),
+        "auc": float(auc) if auc is not None else None,
+        "sensitivity": float(sensitivity) if sensitivity is not None else None,
+        "specificity": float(specificity) if specificity is not None else None,
+        "threshold": float(threshold),
     }
 
 
@@ -402,7 +424,7 @@ def save_training_curves(history: dict[str, list], output_dir: str) -> None:
 
 
 def save_confusion_matrix(
-    cm: np.ndarray,
+    cm: np.ndarray | list[list[int]],
     output_dir: str,
     threshold: float,
     class_names: list[str] | None = None
@@ -410,6 +432,7 @@ def save_confusion_matrix(
     """Saves confusion matrix plot."""
     os.makedirs(output_dir, exist_ok=True)
     labels = class_names if class_names else ['Nature (0)', 'AI (1)']
+    cm = np.asarray(cm)
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
@@ -543,7 +566,6 @@ def save_all_plots(
     output_dir: str,
     class_names: list[str] | None = None
 ) -> None:
-    """Saves all visualization plots."""
     plots_dir = os.path.join(output_dir, 'plots')
     os.makedirs(plots_dir, exist_ok=True)
 

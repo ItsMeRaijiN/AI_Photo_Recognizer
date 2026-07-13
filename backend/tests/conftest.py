@@ -66,7 +66,7 @@ def _create_mock_ml_engine():
     result.threshold_used = 0.5
 
     mock.predict.return_value = result
-    mock.predict_batch.side_effect = lambda images, **kwargs: [result] * len(images)
+    mock.predict_batch.side_effect = lambda images, *args, **kwargs: [result] * len(images)
 
     from PIL import Image
     mock.generate_heatmap.return_value = Image.new("RGB", (10, 10), color="red")
@@ -76,6 +76,7 @@ def _create_mock_ml_engine():
 
 def _create_mock_metrics_engine():
     mock = MagicMock()
+    mock.version = "test-metrics-fingerprint"
     mock.metric_count = 7
     mock.compute_all.return_value = {"blur_score": 0.1, "noise_level": 0.05}
     mock.get_available_metrics.return_value = {"blur": "Blur detection", "noise": "Noise analysis"}
@@ -96,7 +97,7 @@ def mock_ml_services():
                      "generate_heatmap"]:
             setattr(mock_ml, attr, getattr(ml, attr))
 
-        for attr in ["metric_count", "compute_all", "get_available_metrics"]:
+        for attr in ["version", "metric_count", "compute_all", "get_available_metrics"]:
             setattr(mock_metrics, attr, getattr(metrics, attr))
 
         yield {
@@ -172,6 +173,7 @@ def test_analysis(test_db: Session, test_user: User) -> Analysis:
         inference_time_ms=50.0,
         model_type="torch",
         backbone_name="convnext",
+        model_version="test-fingerprint",
         owner_id=test_user.id,
     )
     test_db.add(analysis)

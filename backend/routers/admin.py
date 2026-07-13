@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -9,9 +10,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from backend.core.config import _is_placeholder, settings
 from backend.core.database import get_db
+from backend.core.uploads import save_upload_limited
 from backend.core.security import get_password_hash
 from backend.models.analysis import Analysis
 from backend.models.user import User
@@ -22,6 +25,56 @@ from backend.services.metrics_loader import metrics_engine
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+
+
+def _delete_managed_artifact(path: str | None) -> None:
+    if not path:
+        return
+    target = Path(path).resolve()
+    for managed in (settings.UPLOAD_DIR, settings.HEATMAPS_DIR):
+        if managed and target.is_relative_to(managed.resolve()):
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not delete managed artifact: %s", target)
+            return
+
+
+def _validate_model_artifact(path: Path, suffix: str) -> None:
+    if suffix == ".pt":
+        import torch
+
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+        if not isinstance(checkpoint, dict):
+            raise ValueError("PyTorch model must contain a state dictionary")
+        state = checkpoint.get("model_state_dict", checkpoint)
+        if not isinstance(state, dict) or not state:
+            raise ValueError("PyTorch model contains no weights")
+        if not all(isinstance(key, str) for key in state):
+            raise ValueError("PyTorch state dictionary has invalid keys")
+        if not all(torch.is_tensor(value) for value in state.values()):
+            raise ValueError("PyTorch state dictionary contains non-tensor values")
+
+        config = checkpoint.get("config", {}) if "model_state_dict" in checkpoint else {}
+        if config and not isinstance(config, dict):
+            raise ValueError("PyTorch checkpoint config must be a dictionary")
+        backbone = str(config.get("backbone", "")).lower()
+        if backbone and "convnext" not in backbone and "effnet" not in backbone:
+            raise ValueError(f"Unsupported backbone: {backbone}")
+        image_size = int(config.get("image_size", 224))
+        if not 32 <= image_size <= 4096:
+            raise ValueError("Model image_size must be between 32 and 4096 pixels")
+        return
+
+    if suffix == ".onnx":
+        import onnxruntime as ort
+
+        session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        if not session.get_inputs() or not session.get_outputs():
+            raise ValueError("ONNX model has no inputs or outputs")
+        return
+
+    raise ValueError("Unsupported model format")
 
 class BootstrapRequest(BaseModel):
     username: str = Field(min_length=3, max_length=50)
@@ -72,7 +125,7 @@ def create_initial_admin(
             detail="Admin bootstrap is disabled. Set ADMIN_BOOTSTRAP_TOKEN in the environment first.",
         )
 
-    if req.secret_token != configured_token:
+    if not req.secret_token or not hmac.compare_digest(req.secret_token, configured_token):
         logger.warning(f"Bootstrap attempt with invalid token for user: {req.username}")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -137,8 +190,19 @@ def delete_user(
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
 
     username = user.username
+    artifacts = db.query(Analysis.file_path, Analysis.heatmap_path).filter(
+        Analysis.owner_id == user.id
+    ).all()
     db.delete(user)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    for file_path, heatmap_path in artifacts:
+        _delete_managed_artifact(str(file_path) if file_path else None)
+        _delete_managed_artifact(str(heatmap_path) if heatmap_path else None)
 
     return {"message": f"User {username} deleted"}
 
@@ -255,11 +319,23 @@ def cleanup_system(
         Analysis.created_at < cutoff,
     ).all()
 
+    orphan_artifacts = [
+        (
+            str(orphan.file_path) if orphan.file_path else None,
+            str(orphan.heatmap_path) if orphan.heatmap_path else None,
+        )
+        for orphan in orphans
+    ]
+
     for orphan in orphans:
         db.delete(orphan)
         deleted_orphans += 1
 
     db.commit()
+
+    for file_path, heatmap_path in orphan_artifacts:
+        _delete_managed_artifact(file_path)
+        _delete_managed_artifact(heatmap_path)
 
     return CleanupResult(
         deleted_temp_files=deleted_temp,
@@ -321,20 +397,28 @@ async def upload_model(
     _admin: User = Depends(get_current_superuser),  # Auth only
 ) -> dict[str, str]:
     filename = model.filename or "uploaded_model"
+    suffix = Path(filename).suffix.lower()
 
-    if not (filename.endswith(".pt") or filename.endswith(".onnx")):
+    if suffix not in {".pt", ".onnx"}:
         raise HTTPException(status_code=400, detail="Model must be .pt or .onnx file")
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     dest_dir = settings.BASE_DIR / "runs" / "experiment" / f"run_{timestamp}"
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    dest_filename = "best_model.pt" if filename.endswith(".pt") else "model.onnx"
+    dest_filename = "best_model.pt" if suffix == ".pt" else "model.onnx"
     dest_path = dest_dir / dest_filename
+    pending_path = dest_dir / f".{dest_filename}.uploading"
 
     try:
-        content = await model.read()
-        dest_path.write_bytes(content)
+        await save_upload_limited(
+            model,
+            pending_path,
+            max_bytes=settings.MAX_MODEL_UPLOAD_SIZE_MB * 1024 * 1024,
+            label="Model",
+        )
+        await run_in_threadpool(_validate_model_artifact, pending_path, suffix)
+        pending_path.replace(dest_path)
 
         logger.info(f"Model uploaded: {dest_path}")
 
@@ -343,8 +427,16 @@ async def upload_model(
             "path": str(dest_path),
             "note": "Restart server to load new model",
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Model upload failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Upload error: {e}")
+        logger.exception("Model upload validation failed")
+        raise HTTPException(status_code=400, detail=f"Invalid model file: {e}")
     finally:
+        pending_path.unlink(missing_ok=True)
+        if not dest_path.exists():
+            try:
+                dest_dir.rmdir()
+            except OSError:
+                pass
         await model.close()

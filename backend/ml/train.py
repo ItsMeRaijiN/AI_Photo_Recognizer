@@ -42,14 +42,10 @@ except ImportError:
     HAS_OPTUNA = False
 
 def get_current_lr(optimizer: optim.Optimizer) -> float:
-    """Gets learning rate from last param group."""
     return optimizer.param_groups[-1]['lr']
 
 
 def _apply_checkpoint_config(cfg: Config, checkpoint_path: str) -> Config:
-    """
-    Creates new config with values from checkpoint for resume compatibility.
-    """
     print(f"\n   Peeking at checkpoint to verify compatibility...")
 
     try:
@@ -96,6 +92,33 @@ def _apply_checkpoint_config(cfg: Config, checkpoint_path: str) -> Config:
     print(f"Checkpoint compatible: backbone={new_cfg.backbone}, dropout={new_cfg.dropout}")
 
     return new_cfg
+
+
+def _restore_training_state(
+    checkpoint: dict[str, Any] | None,
+    optimizer: optim.Optimizer,
+    scaler: torch.amp.GradScaler | None,
+    scheduler: ReduceLROnPlateau | None = None,
+    warmup_scheduler: LinearLR | None = None,
+) -> None:
+    if not checkpoint:
+        return
+
+    optimizer_state = checkpoint.get("optimizer_state_dict")
+    if optimizer_state:
+        optimizer.load_state_dict(optimizer_state)
+
+    scaler_state = checkpoint.get("scaler_state_dict")
+    if scaler is not None and scaler_state:
+        scaler.load_state_dict(scaler_state)
+
+    scheduler_state = checkpoint.get("scheduler_state_dict")
+    if scheduler is not None and scheduler_state:
+        scheduler.load_state_dict(scheduler_state)
+
+    warmup_state = checkpoint.get("warmup_scheduler_state_dict")
+    if warmup_scheduler is not None and warmup_state:
+        warmup_scheduler.load_state_dict(warmup_state)
 
 
 def _train_stage(
@@ -167,13 +190,14 @@ def _train_stage(
               f"Loss: {train_loss:.4f}/{val_loss:.4f} | "
               f"F1: {f1:.4f} | AUC: {auc_str}{lr_str}")
 
-        if f1 > best_f1:
+        if f1 > best_f1 or not os.path.exists(checkpoint_path):
             best_f1, best_threshold, best_epoch = f1, thresh, global_step
 
             if not trial:
                 save_checkpoint(
                     model, optimizer, scaler, cfg.to_dict(), metrics, thresh,
-                    checkpoint_path, stage=stage, epoch_in_stage=epoch, history=history
+                    checkpoint_path, stage=stage, epoch_in_stage=epoch, history=history,
+                    scheduler=scheduler, warmup_scheduler=warmup_scheduler,
                 )
                 print(f"New best F1: {f1:.4f} (threshold: {thresh:.4f})")
 
@@ -218,7 +242,7 @@ def train(
 
     model = get_model(
         cfg.backbone,
-        pretrained=True,
+        pretrained=not cfg.resume,
         dropout=cfg.dropout,
         local_weights_path=cfg.local_weights_path
     ).to(device)
@@ -253,6 +277,7 @@ def train(
     best_f1, best_threshold, best_epoch = 0.0, 0.5, 0
     overall_best_f1, overall_best_threshold, overall_best_epoch = 0.0, 0.5, 0
     start_stage, start_epoch = 1, 1
+    resume_checkpoint: dict[str, Any] | None = None
     checkpoint_path = os.path.join(output_dir, "best_model.pt")
     stage1_checkpoint_path = os.path.join(output_dir, "best_model_stage1.pt")
 
@@ -263,6 +288,7 @@ def train(
         print(f"   Path: {cfg.resume}")
 
         ckpt = load_checkpoint(cfg.resume, model, device)
+        resume_checkpoint = ckpt
         best_f1 = ckpt.get('best_f1', 0.0)
         best_threshold = ckpt.get('best_threshold', 0.5)
         best_epoch = ckpt.get('total_epochs', 0)
@@ -270,6 +296,8 @@ def train(
         start_stage = ckpt.get('stage', 2)
         start_epoch = ckpt.get('epoch_in_stage', 0) + 1
         history = ckpt.get('history', history)
+        resume_target = stage1_checkpoint_path if start_stage == 1 else checkpoint_path
+        shutil.copy2(cfg.resume, resume_target)
 
         print(f"   Resuming from Stage {start_stage}, Epoch {start_epoch}")
         print(f"   Best F1 so far: {best_f1:.4f}")
@@ -290,6 +318,8 @@ def train(
             lr=cfg.stage1_lr,
             weight_decay=cfg.weight_decay
         )
+        if start_stage == 1:
+            _restore_training_state(resume_checkpoint, optimizer, scaler)
 
         early_stop_s1 = EarlyStopping(patience=stage1_patience, min_delta=cfg.min_delta)
 
@@ -343,8 +373,9 @@ def train(
         optimizer = optim.AdamW(param_groups)
 
         warmup_epochs = min(cfg.warmup_epochs, stage2_epochs // 3)
+        s2_start = start_epoch if start_stage == 2 else 1
         warmup_scheduler: LinearLR | None = None
-        if warmup_epochs > 0:
+        if warmup_epochs > 0 and s2_start <= warmup_epochs:
             warmup_scheduler = LinearLR(
                 optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs
             )
@@ -353,9 +384,16 @@ def train(
             optimizer, mode='max', factor=cfg.scheduler_factor,
             patience=cfg.scheduler_patience, min_lr=cfg.scheduler_min_lr
         )
+        if start_stage == 2:
+            _restore_training_state(
+                resume_checkpoint,
+                optimizer,
+                scaler,
+                scheduler=main_scheduler,
+                warmup_scheduler=warmup_scheduler,
+            )
 
         early_stop = EarlyStopping(patience=patience, min_delta=cfg.min_delta)
-        s2_start = start_epoch if start_stage == 2 else 1
 
         stage2_best_f1, stage2_best_threshold, stage2_best_epoch = _train_stage(
             model=model,
@@ -389,11 +427,14 @@ def train(
             )
             print(f"\nStage 2 improved over Stage 1: {stage2_best_f1:.4f} > {stage1_best_f1:.4f}")
         elif start_stage == 1 and stage2_best_f1 < overall_best_f1:
-            # Stage 2 didn't improve - copy Stage 1 checkpoint as best
             print(f"\nStage 2 did not improve over Stage 1 ({stage2_best_f1:.4f} < {overall_best_f1:.4f})")
             if os.path.exists(stage1_checkpoint_path) and not trial:
                 shutil.copy(stage1_checkpoint_path, checkpoint_path)
                 print(f"Using Stage 1 checkpoint as best model")
+
+    if not trial and not os.path.exists(checkpoint_path) and os.path.exists(stage1_checkpoint_path):
+        shutil.copy2(stage1_checkpoint_path, checkpoint_path)
+        print("\nUsing the Stage 1 checkpoint as the final model")
 
     if trial:
         return overall_best_f1
@@ -453,6 +494,7 @@ def train(
         'train_generators': cfg.train_generators,
         'val_generators': cfg.val_generators,
         'seed': cfg.seed,
+        'image_size': cfg.image_size,
         'total_epochs': len(history['train_loss']),
     }
 

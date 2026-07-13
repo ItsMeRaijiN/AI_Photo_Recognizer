@@ -94,6 +94,19 @@ describe('UploadArea', () => {
     expect(mockOnFileSelect).not.toHaveBeenCalled();
   });
 
+  it('rejects AVIF files that are not supported by the backend', () => {
+    const { container } = render(
+      <UploadArea onFileSelect={mockOnFileSelect} isLoading={false} progress={0} />
+    );
+    const avif = new File(['image'], 'sample.avif', { type: 'image/avif' });
+    const fileInput = container.querySelector('input[type="file"][accept="image/*"]') as HTMLInputElement;
+
+    fireEvent.change(fileInput, { target: { files: [avif] } });
+
+    expect(alertMock).toHaveBeenCalled();
+    expect(mockOnFileSelect).not.toHaveBeenCalled();
+  });
+
 it('shows alert when selected folder/files contain no images', async () => {
   const user = userEvent.setup();
   const { container } = render(
@@ -176,6 +189,26 @@ it('shows alert when selected folder/files contain no images', async () => {
 
       await waitFor(() => {
         expect(alertMock).toHaveBeenCalled();
+      });
+    });
+
+    it('rejects an AVIF response before passing it to the backend', async () => {
+      const user = userEvent.setup();
+      const blob = new Blob(['img'], { type: 'image/avif' });
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        blob: async () => blob,
+      });
+
+      render(<UploadArea onFileSelect={mockOnFileSelect} isLoading={false} progress={0} />);
+
+      await user.type(screen.getByPlaceholderText(/Wklej link do obrazka/i), 'https://example.com/test.avif');
+      await user.click(screen.getAllByRole('button', { name: /Analizuj/i })[0]);
+
+      await waitFor(() => {
+        expect(alertMock).toHaveBeenCalled();
+        expect(mockOnFileSelect).not.toHaveBeenCalled();
       });
     });
 

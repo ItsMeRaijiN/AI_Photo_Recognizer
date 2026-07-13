@@ -287,7 +287,9 @@ def save_checkpoint(
     path: str,
     stage: int,
     epoch_in_stage: int,
-    history: dict[str, Any]
+    history: dict[str, Any],
+    scheduler: torch.optim.lr_scheduler.LRScheduler | torch.optim.lr_scheduler.ReduceLROnPlateau | None = None,
+    warmup_scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
 ) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 
@@ -295,6 +297,8 @@ def save_checkpoint(
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'scaler_state_dict': scaler.state_dict() if scaler else None,
+        'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+        'warmup_scheduler_state_dict': warmup_scheduler.state_dict() if warmup_scheduler else None,
         'config': config_dict,
         'best_threshold': threshold,
         'best_f1': metrics.get('f1', 0.0),

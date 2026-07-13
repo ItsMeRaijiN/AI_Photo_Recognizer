@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { AnalysisResult, getModelDisplayName, isMetricSuspicious, MetricResult } from '@/lib/types';
 import { api, endpoints } from '@/lib/api';
@@ -21,11 +21,14 @@ export default function AnalysisResultCard({ data }: Props) {
   const [error, setError] = useState('');
   const [opacity, setOpacity] = useState(0.6);
   const [showAllMetrics, setShowAllMetrics] = useState(false);
+  const heatmapRequestId = useRef(0);
 
   useEffect(() => {
+    heatmapRequestId.current += 1;
     setHeatmapUrl(null);
     setError('');
     setLoadingHeatmap(false);
+    setShowAllMetrics(false);
   }, [data.id, data.filename]);
   useEffect(() => {
     return () => {
@@ -35,20 +38,28 @@ export default function AnalysisResultCard({ data }: Props) {
 
   const fetchHeatmap = async () => {
     if (heatmapUrl) return;
+    const requestId = ++heatmapRequestId.current;
     setLoadingHeatmap(true);
     setError('');
     try {
       const response = await api.get(endpoints.heatmap(data.id), { responseType: 'blob' });
       const url = URL.createObjectURL(response.data);
+      if (heatmapRequestId.current !== requestId) {
+        URL.revokeObjectURL(url);
+        return;
+      }
       setHeatmapUrl(url);
     } catch (e) {
+      if (heatmapRequestId.current !== requestId) return;
       if (getErrorStatus(e) === 400) {
         setError("Heatmapa niedostępna dla tego typu modelu.");
+      } else if (getErrorStatus(e) === 409) {
+        setError("Heatmapa wymaga ponownej analizy aktualnym modelem.");
       } else {
         setError("Błąd generowania heatmapy.");
       }
     } finally {
-      setLoadingHeatmap(false);
+      if (heatmapRequestId.current === requestId) setLoadingHeatmap(false);
     }
   };
 
@@ -85,14 +96,18 @@ export default function AnalysisResultCard({ data }: Props) {
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="mt-8 bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl overflow-hidden shadow-lg"
+      className="mt-8 overflow-hidden rounded-3xl border border-zinc-200 bg-white shadow-[0_18px_60px_-40px_rgba(24,24,27,0.5)] dark:border-white/10 dark:bg-[#111318]"
     >
-      <div className={`p-6 border-b border-zinc-200 dark:border-zinc-800 ${isAi ? 'bg-red-50 dark:bg-red-950/20' : 'bg-emerald-50 dark:bg-emerald-950/20'}`}>
+      <div className={`border-b border-zinc-200 p-5 dark:border-white/8 sm:p-6 ${isAi ? 'bg-red-50/70 dark:bg-red-950/15' : 'bg-emerald-50/70 dark:bg-emerald-950/15'}`}>
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-2 border-b border-black/5 pb-4 text-xs text-zinc-500 dark:border-white/8">
+          <span className="truncate">Analiza zakończona · {data.filename}</span>
+          {data.from_cache && <span className="rounded-full bg-white/70 px-2.5 py-1 font-medium dark:bg-white/5">wynik z pamięci podręcznej</span>}
+        </div>
         <div className="flex flex-col lg:flex-row lg:justify-between lg:items-start gap-6">
           <div className="flex items-start gap-3">
             {isAi ? <AlertTriangle className="text-red-500 flex-shrink-0" size={36} /> : <CheckCircle className="text-emerald-500 flex-shrink-0" size={36} />}
             <div>
-              <h2 className={`text-xl sm:text-2xl font-bold whitespace-nowrap ${isAi ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+              <h2 className={`text-xl font-semibold tracking-[-0.02em] sm:text-2xl ${isAi ? 'text-red-700 dark:text-red-400' : 'text-emerald-700 dark:text-emerald-400'}`}>
                 {isAi ? "WYKRYTO AI" : "PRAWDZIWE ZDJĘCIE"}
               </h2>
 
@@ -114,7 +129,7 @@ export default function AnalysisResultCard({ data }: Props) {
               <span className="text-sm text-zinc-500 dark:text-zinc-400 font-medium">
                 Szansa na AI:
               </span>
-              <span className={`text-4xl font-mono font-bold ${isAi ? 'text-red-500' : 'text-emerald-500'}`}>
+              <span className={`text-4xl font-semibold tracking-[-0.04em] ${isAi ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
                 {scorePercent}%
               </span>
             </div>
@@ -193,7 +208,7 @@ export default function AnalysisResultCard({ data }: Props) {
         </div>
       )}
 
-      <div className="p-6 bg-zinc-50 dark:bg-zinc-900/50">
+      <div className="bg-zinc-50/70 p-5 dark:bg-black/10 sm:p-6">
         {!heatmapUrl ? (
           <div className="flex items-center gap-3 flex-wrap">
             <button
@@ -202,7 +217,7 @@ export default function AnalysisResultCard({ data }: Props) {
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition 
                 ${data.id < 0
                   ? 'bg-zinc-200 dark:bg-zinc-800/50 text-zinc-400 dark:text-zinc-500 cursor-not-allowed' 
-                  : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700'}
+                  : 'bg-zinc-900 hover:bg-zinc-700 text-white dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200'}
               `}
             >
               {loadingHeatmap ? <Loader2 className="animate-spin" size={16}/> : <Eye size={16}/>}

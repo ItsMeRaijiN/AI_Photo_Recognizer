@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AnalysisResultCard from '../components/AnalysisResult';
 import { AnalysisResult } from '@/lib/types';
@@ -234,6 +234,26 @@ describe('AnalysisResultCard', () => {
         expect(screen.queryByText('Heatmapa Uwagi')).not.toBeInTheDocument();
         expect(screen.getByRole('button', { name: /Pokaż GradCAM/i })).toBeInTheDocument();
       });
+    });
+
+    it('should ignore a stale heatmap response after selecting another result', async () => {
+      const user = userEvent.setup();
+      let resolveRequest!: (value: { data: Blob }) => void;
+      mockGet.mockReturnValueOnce(new Promise(resolve => { resolveRequest = resolve; }));
+      const first = createMockResult({ id: 1, filename: 'first.jpg' });
+      const second = createMockResult({ id: 2, filename: 'second.jpg' });
+      const { rerender } = render(<AnalysisResultCard data={first} />);
+
+      await user.click(screen.getByRole('button', { name: /Pokaż GradCAM/i }));
+      rerender(<AnalysisResultCard data={second} />);
+      await act(async () => {
+        resolveRequest({ data: new Blob(['stale']) });
+        await Promise.resolve();
+      });
+
+      expect(screen.queryByText('Heatmapa Uwagi')).not.toBeInTheDocument();
+      expect(screen.getByText(/second.jpg/)).toBeInTheDocument();
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:http://localhost/test-heatmap');
     });
   });
 });

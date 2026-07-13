@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import inspect
 import logging
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,18 +21,30 @@ logger = logging.getLogger(__name__)
 MetricFunction = Callable[..., dict[str, Any]]
 
 
+def _with_metrics_lock(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
 class MetricsLoader:
 
     MAX_METRIC_SIZE: int = 512
     DEFAULT_MAX_WORKERS: int = 4
 
     def __init__(self) -> None:
+        self._lock = threading.RLock()
         self._metrics: dict[str, MetricFunction] = {}
         self._metric_info: dict[str, dict[str, Any]] = {}
         self._supports_context: dict[str, bool] = {}
         self._to_python_types: Callable[[Any], Any] | None = None
+        self.version = "unavailable"
         self.reload_metrics()
 
+    @_with_metrics_lock
     def reload_metrics(self) -> None:
         self._metrics = {}
         self._metric_info = {}
@@ -40,6 +55,7 @@ class MetricsLoader:
 
         if not metrics_dir or not metrics_dir.exists():
             logger.warning(f"Metrics directory not found: {metrics_dir}")
+            self.version = "unavailable"
             return
 
         logger.info(f"Loading custom metrics from: {metrics_dir}")
@@ -58,7 +74,19 @@ class MetricsLoader:
             except Exception as e:
                 logger.error(f"Failed to load metric '{metric_name}': {e}")
 
+        self.version = self._fingerprint_metrics(metrics_dir)
         logger.info(f"Loaded {len(self._metrics)} metrics: {list(self._metrics.keys())}")
+
+    @staticmethod
+    def _fingerprint_metrics(metrics_dir: Path) -> str:
+        digest = hashlib.sha256()
+        for file_path in sorted(metrics_dir.glob("*.py"), key=lambda p: p.name):
+            digest.update(file_path.name.encode("utf-8"))
+            try:
+                digest.update(file_path.read_bytes())
+            except OSError:
+                digest.update(b"<unreadable>")
+        return digest.hexdigest()[:16]
 
     def _preload_common_module(self, metrics_dir: Path) -> None:
         import sys
@@ -174,6 +202,7 @@ class MetricsLoader:
 
         logger.debug(f"Loaded metric: {metric_name} (context={'yes' if supports_context else 'no'})")
 
+    @_with_metrics_lock
     def compute_all(
         self,
         image: Image.Image,
@@ -253,10 +282,12 @@ class MetricsLoader:
             results[name] = value
         return results
 
+    @_with_metrics_lock
     def get_available_metrics(self) -> dict[str, dict[str, Any]]:
         return self._metric_info.copy()
 
     @property
+    @_with_metrics_lock
     def metric_count(self) -> int:
         return len(self._metrics)
 

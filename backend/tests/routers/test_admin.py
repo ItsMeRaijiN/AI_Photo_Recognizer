@@ -90,6 +90,34 @@ class TestUserManagement:
         assert response.status_code == 400
         assert "Cannot remove your own admin rights" in response.json()["detail"]
 
+    def test_delete_user_removes_managed_analysis_files(
+        self, client: TestClient, admin_headers: dict, test_db, test_user, tmp_path: Path, monkeypatch
+    ):
+        upload_dir = tmp_path / "uploads"
+        heatmaps_dir = tmp_path / "heatmaps"
+        upload_dir.mkdir()
+        heatmaps_dir.mkdir()
+        image_path = upload_dir / "owned.png"
+        heatmap_path = heatmaps_dir / "owned.jpg"
+        image_path.write_bytes(b"image")
+        heatmap_path.write_bytes(b"heatmap")
+        monkeypatch.setattr(settings, "UPLOAD_DIR", upload_dir)
+        monkeypatch.setattr(settings, "HEATMAPS_DIR", heatmaps_dir)
+
+        test_db.add(Analysis(
+            filename="owned.png", file_hash="owned-hash", file_path=str(image_path),
+            heatmap_path=str(heatmap_path), is_ai=True, score=0.9, confidence=0.8,
+            inference_time_ms=1.0, model_type="torch", backbone_name="convnext",
+            owner_id=test_user.id,
+        ))
+        test_db.commit()
+
+        response = client.delete(f"/admin/users/{test_user.id}", headers=admin_headers)
+
+        assert response.status_code == 200
+        assert not image_path.exists()
+        assert not heatmap_path.exists()
+
 
 class TestSystemStats:
     def test_get_stats(self, client: TestClient, admin_headers: dict):
@@ -154,8 +182,20 @@ class TestModelUpload:
         assert response.status_code == 400
         assert "must be .pt or .onnx" in response.json()["detail"]
 
+    def test_upload_rejects_invalid_pytorch_payload(
+        self, client: TestClient, admin_headers: dict, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "BASE_DIR", tmp_path, raising=False)
+        files = {"model": ("best_model.pt", b"not-a-checkpoint", "application/octet-stream")}
+
+        response = client.post("/admin/upload-model", headers=admin_headers, files=files)
+
+        assert response.status_code == 400
+        assert not list(tmp_path.rglob("*.pt"))
+
     def test_upload_success(self, client: TestClient, admin_headers: dict, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(settings, "BASE_DIR", tmp_path, raising=False)
+        monkeypatch.setattr("backend.routers.admin._validate_model_artifact", lambda *_: None)
 
         files = {"model": ("best_model.pt", b"model_content", "application/octet-stream")}
         response = client.post("/admin/upload-model", headers=admin_headers, files=files)

@@ -1,4 +1,5 @@
 import logging
+import secrets
 from pathlib import Path
 from typing import Any
 from functools import lru_cache
@@ -22,6 +23,7 @@ def _detect_device() -> str:
 
 def _find_best_model(base_dir: Path) -> Path | None:
     runs_dir = base_dir / "runs"
+    canonical_names = ("best_model.pt", "model.onnx")
 
     if not runs_dir.exists():
         return None
@@ -34,31 +36,38 @@ def _find_best_model(base_dir: Path) -> Path | None:
             reverse=True
         )
         for run_folder in run_folders:
-            model_path = run_folder / "best_model.pt"
-            if model_path.exists():
-                return model_path
+            for model_name in canonical_names:
+                model_path = run_folder / model_name
+                if model_path.exists():
+                    return model_path
 
-        direct_model = experiment_dir / "best_model.pt"
-        if direct_model.exists():
-            return direct_model
+        for model_name in canonical_names:
+            direct_model = experiment_dir / model_name
+            if direct_model.exists():
+                return direct_model
 
-    pt_files = list(runs_dir.rglob("*.pt"))
-    if pt_files:
-        best_models = [f for f in pt_files if "best_model" in f.name]
-        if best_models:
-            return sorted(best_models, key=lambda x: x.stat().st_mtime, reverse=True)[0]
-        return sorted(pt_files, key=lambda x: x.stat().st_mtime, reverse=True)[0]
+    model_files = [*runs_dir.rglob("*.pt"), *runs_dir.rglob("*.onnx")]
+    if model_files:
+        canonical_models = [f for f in model_files if f.name in canonical_names]
+        if canonical_models:
+            return max(canonical_models, key=lambda x: x.stat().st_mtime)
+        return max(model_files, key=lambda x: x.stat().st_mtime)
 
     return None
 
 
 def _is_placeholder(value: str) -> bool:
     v = (value or "").strip().upper()
-    return v.startswith("CHANGE-THIS") or v in {"", "DEFAULT", "SECRET", "PASSWORD"}
+    return (
+        v.startswith(("CHANGE-THIS", "CHANGE-ME", "CHANGEME"))
+        or v in {"", "DEFAULT", "SECRET", "PASSWORD"}
+    )
 
 
 class Settings(BaseSettings):
     BASE_DIR: Path = Path(__file__).resolve().parents[2]
+
+    ENVIRONMENT: str = "development"
 
     CREATE_DIRS: bool = True
     DETECT_DEVICE: bool = True
@@ -91,6 +100,11 @@ class Settings(BaseSettings):
     ALLOWED_EXTENSIONS: set[str] = {".png", ".jpg", ".jpeg", ".webp", ".heic", ".bmp", ".tiff"}
 
     MAX_UPLOAD_SIZE_MB: int = 20
+    MAX_BATCH_TOTAL_SIZE_MB: int = 200
+    MAX_MODEL_UPLOAD_SIZE_MB: int = 1024
+    MAX_IMAGE_PIXELS: int = 25_000_000
+    MAX_IMAGE_DIMENSION: int = 12_000
+    UPLOAD_CHUNK_SIZE_KB: int = 1024
     BATCH_INFERENCE_SIZE: int = 16
 
     model_config = SettingsConfigDict(
@@ -105,7 +119,15 @@ class Settings(BaseSettings):
             logger.warning("BASE_DIR might be incorrect. Could not find 'backend' folder at %s", self.BASE_DIR)
 
         if _is_placeholder(self.SECRET_KEY):
-            logger.warning("INSECURE: SECRET_KEY looks like a placeholder.")
+            if self.ENVIRONMENT.strip().lower() in {"production", "prod"}:
+                raise ValueError(
+                    "SECRET_KEY must be configured before starting in production."
+                )
+            self.SECRET_KEY = secrets.token_urlsafe(48)
+            logger.warning(
+                "SECRET_KEY was not configured; generated an ephemeral development key. "
+                "Sessions will be invalidated after restart."
+            )
 
         if _is_placeholder(self.ADMIN_BOOTSTRAP_TOKEN):
             logger.warning("INSECURE: ADMIN_BOOTSTRAP_TOKEN looks like a placeholder.")

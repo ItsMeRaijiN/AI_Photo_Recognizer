@@ -32,6 +32,7 @@ class AnalysisResponse(BaseModel):
     custom_metrics: dict[str, Any] | None = None
 
     created_at: datetime
+    source_index: int | None = Field(default=None, ge=0)
 
     @field_validator("created_at")
     @classmethod
@@ -58,5 +59,3 @@ class BatchUploadResponse(BaseModel):
     results: list[AnalysisResponse]
     errors: list[str]
     total_inference_time_ms: float = Field(ge=0.0)
-
-
